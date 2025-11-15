@@ -62,13 +62,15 @@ See [`understory_index::Index`], [`understory_index::RTreeF32`]/[`understory_ind
 - [`LocalNode`]: per-node local data (bounds, transform, optional clip, z, flags).
   See [`LocalNode::flags`] for visibility/picking controls.
 - [`NodeFlags`]: visibility and picking controls.
+- [`InterestMask`]: optional per-node input interest hints used to prune candidates for specific event classes.
 - [`NodeId`]: generational handle of a node.
-- [`QueryFilter`]: restricts hit/intersect results (visible/pickable).
-  See [`NodeFlags::VISIBLE`] and [`NodeFlags::PICKABLE`].
+- [`QueryFilter`]: restricts hit/intersect results (visible/pickable/interest).
+  See [`NodeFlags::VISIBLE`], [`NodeFlags::PICKABLE`], and [`InterestMask`].
 
 Key operations:
 - [`Tree::insert`](Tree::insert) → [`NodeId`]
 - [`Tree::set_local_transform`](Tree::set_local_transform) / [`Tree::set_local_clip`](Tree::set_local_clip) / [`Tree::set_local_bounds`](Tree::set_local_bounds) / [`Tree::set_flags`](Tree::set_flags)
+- [`Tree::set_interest`](Tree::set_interest) / [`Tree::interest`](Tree::interest)
 - [`Tree::commit`](Tree::commit) → damage summary; updates world data and the spatial index.
 - [`Tree::hit_test_point`](Tree::hit_test_point) and [`Tree::intersect_rect`](Tree::intersect_rect).
 - [`Tree::z_index`](Tree::z_index) exposes the stacking order of a live [`NodeId`].

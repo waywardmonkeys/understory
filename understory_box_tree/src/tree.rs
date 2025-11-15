@@ -8,7 +8,7 @@ use kurbo::{Affine, Point, Rect, RoundedRect};
 use understory_index::{Aabb2D, Index as AabbIndex, Key as AabbKey};
 
 use crate::damage::Damage;
-use crate::types::{LocalNode, NodeFlags, NodeId};
+use crate::types::{InterestMask, LocalNode, NodeFlags, NodeId};
 use crate::util::{rect_to_aabb, transform_rect_bbox};
 
 impl Default for Tree {
@@ -53,12 +53,28 @@ pub struct Hit {
 /// Filters applied during hit testing and rectangle intersection.
 ///
 /// Used by [`Tree::hit_test_point`] and [`Tree::intersect_rect`].
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct QueryFilter {
     /// If true, only consider nodes marked [`NodeFlags::VISIBLE`].
     pub visible_only: bool,
     /// If true, only consider nodes marked [`NodeFlags::PICKABLE`] (hit-test).
     pub pickable_only: bool,
+    /// If non-empty, only consider nodes whose interest overlaps this mask.
+    ///
+    /// This is a pruning hint for high-frequency inputs (pointer move, wheel, etc.).
+    /// When empty, interest is ignored and behavior matches the older `visible_only` /
+    /// `pickable_only` filter semantics.
+    pub interest_required: InterestMask,
+}
+
+impl Default for QueryFilter {
+    fn default() -> Self {
+        Self {
+            visible_only: false,
+            pickable_only: false,
+            interest_required: InterestMask::empty(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +101,8 @@ pub(crate) struct Node {
     local: LocalNode,
     world: WorldNode,
     dirty: Dirty,
+    interest: InterestMask,
+    subtree_interest: InterestMask,
     index_key: Option<AabbKey>,
 }
 
@@ -103,6 +121,8 @@ impl Node {
                 z: true,
                 index: true,
             },
+            interest: InterestMask::empty(),
+            subtree_interest: InterestMask::empty(),
             index_key: None,
         }
     }
@@ -169,6 +189,28 @@ impl Tree {
             self.link_parent(id, p);
         }
         id
+    }
+
+    /// Set the local interest mask for a node.
+    ///
+    /// Interest is an optional, behavioral hint indicating which kinds of input this node
+    /// (or code associated with it) cares about. It is used to prune candidates in high-frequency
+    /// queries when [`QueryFilter::interest_required`] is non-empty.
+    pub fn set_interest(&mut self, id: NodeId, mask: InterestMask) {
+        if let Some(n) = self.node_opt_mut(id) {
+            n.interest = mask;
+        }
+    }
+
+    /// Read the local interest mask for a node.
+    ///
+    /// Returns an empty mask if the `NodeId` is stale or out of range.
+    pub fn interest(&self, id: NodeId) -> InterestMask {
+        self.nodes
+            .get(id.idx())
+            .and_then(|slot| slot.as_ref())
+            .map(|n| n.interest)
+            .unwrap_or_else(InterestMask::empty)
     }
 
     /// Remove a node (and its subtree) from the tree.
@@ -321,6 +363,11 @@ impl Tree {
             if filter.pickable_only && !node.local.flags.contains(NodeFlags::PICKABLE) {
                 continue;
             }
+            if !filter.interest_required.is_empty()
+                && (node.interest & filter.interest_required).is_empty()
+            {
+                continue;
+            }
             if let Some(clip) = node.local.local_clip {
                 let world_pt = node.world.world_transform.inverse() * pt;
                 if !clip.rect().contains(world_pt) {
@@ -356,6 +403,11 @@ impl Tree {
                 return false;
             };
             if filter.visible_only && !node.local.flags.contains(NodeFlags::VISIBLE) {
+                return false;
+            }
+            if !filter.interest_required.is_empty()
+                && (node.interest & filter.interest_required).is_empty()
+            {
                 return false;
             }
             true
@@ -438,7 +490,7 @@ impl Tree {
             Update(AabbKey, Aabb2D<f64>),
             Insert(Aabb2D<f64>),
         }
-        let (old_bounds, child_ids, (_local, world), index_op) = {
+        let (old_bounds, child_ids, (_local, world), index_op, local_interest) = {
             let node = self.node_mut(id);
             let old = node.world.world_bounds;
             node.world.world_transform = parent_tf * node.local.local_transform;
@@ -461,7 +513,8 @@ impl Tree {
                 IndexOp::Insert(aabb)
             };
             let child_ids = node.children.clone();
-            (old, child_ids, (node.local.clone(), node.world.clone()), op)
+            let local_interest = node.interest;
+            (old, child_ids, (node.local.clone(), node.world.clone()), op, local_interest)
         };
 
         match index_op {
@@ -481,8 +534,21 @@ impl Tree {
             }
         }
 
+        let mut subtree_interest = local_interest;
         for child in child_ids {
             self.update_world_recursive(child, world.world_transform, world.world_clip, damage);
+            // Accumulate subtree interest from children after they are updated.
+            let child_interest = self
+                .nodes
+                .get(child.idx())
+                .and_then(|slot| slot.as_ref())
+                .map(|n| n.subtree_interest)
+                .unwrap_or_else(InterestMask::empty);
+            subtree_interest |= child_interest;
+        }
+        // Store the aggregated subtree interest for this node.
+        if let Some(node) = self.nodes.get_mut(id.idx()).and_then(|slot| slot.as_mut()) {
+            node.subtree_interest = subtree_interest;
         }
     }
 }
@@ -527,12 +593,138 @@ mod tests {
                 QueryFilter {
                     visible_only: true,
                     pickable_only: true,
+                    ..QueryFilter::default()
                 },
             )
             .unwrap();
         assert_eq!(hit.node, b, "topmost by z should win");
         assert_eq!(hit.path.first().copied(), Some(root));
         assert_eq!(hit.path.last().copied(), Some(b));
+    }
+
+    #[test]
+    fn interest_filter_can_prune_candidates() {
+        let mut tree = Tree::new();
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        let a = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(10.0, 10.0, 60.0, 60.0),
+                z_index: 0,
+                ..Default::default()
+            },
+        );
+        let b = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(40.0, 40.0, 120.0, 120.0),
+                z_index: 10,
+                ..Default::default()
+            },
+        );
+        // Only node B is interested in POINTER_MOVE.
+        tree.set_interest(a, InterestMask::empty());
+        tree.set_interest(b, InterestMask::POINTER_MOVE);
+        let _ = tree.commit();
+
+        let base_filter = QueryFilter {
+            visible_only: true,
+            pickable_only: true,
+            ..QueryFilter::default()
+        };
+        let hit_unfiltered = tree
+            .hit_test_point(Point::new(50.0, 50.0), base_filter)
+            .unwrap();
+        assert_eq!(hit_unfiltered.node, b);
+
+        // With interest_required set, A is pruned and B still wins.
+        let move_filter = QueryFilter {
+            visible_only: true,
+            pickable_only: true,
+            interest_required: InterestMask::POINTER_MOVE,
+        };
+        let hit_filtered = tree
+            .hit_test_point(Point::new(50.0, 50.0), move_filter)
+            .unwrap();
+        assert_eq!(hit_filtered.node, b);
+    }
+
+    #[test]
+    fn subtree_interest_accumulates_children() {
+        let mut tree = Tree::new();
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        let a = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(10.0, 10.0, 60.0, 60.0),
+                ..Default::default()
+            },
+        );
+        let b = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(40.0, 40.0, 120.0, 120.0),
+                ..Default::default()
+            },
+        );
+        tree.set_interest(a, InterestMask::POINTER_MOVE);
+        tree.set_interest(b, InterestMask::WHEEL);
+        let _ = tree.commit();
+
+        let root_node = tree.node(root);
+        assert_eq!(
+            root_node.subtree_interest.bits(),
+            (InterestMask::POINTER_MOVE | InterestMask::WHEEL).bits()
+        );
+        let a_node = tree.node(a);
+        assert_eq!(a_node.subtree_interest.bits(), InterestMask::POINTER_MOVE.bits());
+        let b_node = tree.node(b);
+        assert_eq!(b_node.subtree_interest.bits(), InterestMask::WHEEL.bits());
+    }
+
+    #[test]
+    fn subtree_interest_updates_when_cleared() {
+        let mut tree = Tree::new();
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        let a = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(10.0, 10.0, 60.0, 60.0),
+                ..Default::default()
+            },
+        );
+        tree.set_interest(a, InterestMask::POINTER_MOVE);
+        let _ = tree.commit();
+        assert!(
+            !tree.node(root).subtree_interest.is_empty(),
+            "root should see child interest"
+        );
+
+        // Clear interest and ensure subtree_interest is recomputed.
+        tree.set_interest(a, InterestMask::empty());
+        let _ = tree.commit();
+        assert!(
+            tree.node(root).subtree_interest.is_empty(),
+            "root interest should clear when children are no longer interested"
+        );
     }
 
     #[test]
@@ -674,6 +866,7 @@ mod tests {
                 QueryFilter {
                     visible_only: true,
                     pickable_only: true,
+                    ..QueryFilter::default()
                 },
             )
             .unwrap();
@@ -700,6 +893,7 @@ mod tests {
                 QueryFilter {
                     visible_only: true,
                     pickable_only: true,
+                    ..QueryFilter::default()
                 },
             )
             .unwrap();
@@ -757,6 +951,7 @@ mod tests {
                 QueryFilter {
                     visible_only: true,
                     pickable_only: true,
+                    ..QueryFilter::default()
                 },
             )
             .expect("expected initial hit at root");
@@ -774,6 +969,7 @@ mod tests {
                 QueryFilter {
                     visible_only: true,
                     pickable_only: true,
+                    ..QueryFilter::default()
                 },
             )
             .expect("expected hit after bounds update");
