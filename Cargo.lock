@@ -491,7 +491,9 @@ name = "understory_benches"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "kurbo",
  "rstar",
+ "understory_box_tree",
  "understory_index",
 ]
 
