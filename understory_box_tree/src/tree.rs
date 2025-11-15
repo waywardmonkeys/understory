@@ -145,6 +145,49 @@ impl Tree {
         Self::new()
     }
 
+    /// Walk the tree top-down for a world-space point, pruning subtrees by flags and interest.
+    ///
+    /// This uses cached `world_bounds` and `subtree_interest` from the last [`Tree::commit`] to
+    /// traverse from roots into children. It is intended for high-frequency inputs such as
+    /// pointer move / hover, where skipping whole cold subtrees can be cheaper than querying
+    /// the spatial index.
+    ///
+    /// Notes:
+    /// - The iteration order is deterministic but not guaranteed to be z-sorted; consumers that
+    ///   care about ordering should assign depth keys or sort the results explicitly.
+    /// - When [`QueryFilter::interest_required`] is empty, interest-based pruning is disabled and
+    ///   traversal falls back to visibility and geometry alone.
+    pub fn walk_point_topdown<'a>(
+        &'a self,
+        pt: Point,
+        filter: QueryFilter,
+    ) -> impl Iterator<Item = NodeId> + 'a {
+        // Collect roots (nodes without parents).
+        let mut roots: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| match n {
+                Some(n) if n.parent.is_none() => {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "NodeId uses 32-bit indices by design."
+                    )]
+                    Some(NodeId::new(i as u32, n.generation))
+                }
+                _ => None,
+            })
+            .collect();
+        // Process roots in insertion order (caller may impose additional ordering).
+        roots.reverse(); // stack is LIFO; reverse so first root is popped last.
+        PointWalk {
+            tree: self,
+            stack: roots,
+            pt,
+            filter,
+        }
+    }
+
     fn mark_subtree_dirty(&mut self, id: NodeId, flags: Dirty) {
         if !self.is_alive(id) {
             return;
@@ -553,6 +596,54 @@ impl Tree {
     }
 }
 
+struct PointWalk<'a> {
+    tree: &'a Tree,
+    stack: Vec<NodeId>,
+    pt: Point,
+    filter: QueryFilter,
+}
+
+impl<'a> Iterator for PointWalk<'a> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(id) = self.stack.pop() {
+            let Some(node) = self.tree.nodes.get(id.idx()).and_then(|slot| slot.as_ref()) else {
+                continue;
+            };
+
+            // Skip entire subtree if flags or interest say nothing underneath can match.
+            if self.filter.visible_only && !node.local.flags.contains(NodeFlags::VISIBLE) {
+                continue;
+            }
+            if !self.filter.interest_required.is_empty()
+                && (node.subtree_interest & self.filter.interest_required).is_empty()
+            {
+                continue;
+            }
+
+            // Geometry prune: if the point is outside this node's world bounds, its children
+            // cannot contain it either.
+            if !node.world.world_bounds.contains(self.pt) {
+                continue;
+            }
+
+            // Descend into children.
+            let children = node.children.clone();
+            for child in children.into_iter().rev() {
+                self.stack.push(child);
+            }
+
+            // Yield this node if it satisfies pickability.
+            if self.filter.pickable_only && !node.local.flags.contains(NodeFlags::PICKABLE) {
+                continue;
+            }
+            return Some(id);
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,6 +744,73 @@ mod tests {
             .hit_test_point(Point::new(50.0, 50.0), move_filter)
             .unwrap();
         assert_eq!(hit_filtered.node, b);
+    }
+
+    #[test]
+    fn walk_point_topdown_prunes_cold_subtrees() {
+        let mut tree = Tree::new();
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        // Cold subtree: interested only in WHEEL.
+        let cold = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        // Hot subtree: interested in POINTER_MOVE.
+        let hot = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 200.0, 200.0),
+                ..Default::default()
+            },
+        );
+        tree.set_interest(cold, InterestMask::WHEEL);
+        tree.set_interest(hot, InterestMask::POINTER_MOVE);
+        let _ = tree.commit();
+
+        // With no interest_required, both subtrees can be visited.
+        let mut all: Vec<NodeId> = tree
+            .walk_point_topdown(
+                Point::new(50.0, 50.0),
+                QueryFilter {
+                    visible_only: true,
+                    pickable_only: true,
+                    ..QueryFilter::default()
+                },
+            )
+            .collect();
+        all.sort_by_key(|id| id.0);
+        assert!(all.contains(&cold), "cold subtree should be reachable without interest filter");
+        assert!(all.contains(&hot), "hot subtree should be reachable without interest filter");
+
+        // With POINTER_MOVE required, the cold subtree is pruned.
+        let mut move_hits: Vec<NodeId> = tree
+            .walk_point_topdown(
+                Point::new(50.0, 50.0),
+                QueryFilter {
+                    visible_only: true,
+                    pickable_only: true,
+                    interest_required: InterestMask::POINTER_MOVE,
+                },
+            )
+            .collect();
+        move_hits.sort_by_key(|id| id.0);
+        assert!(
+            !move_hits.contains(&cold),
+            "cold subtree should be pruned by interest"
+        );
+        assert!(
+            move_hits.contains(&hot),
+            "hot subtree should be reachable when interest matches"
+        );
     }
 
     #[test]
