@@ -11,5 +11,12 @@ understory_responder = { path = "../understory_responder", features = [
 ] }
 kurbo = { workspace = true, default-features = true }
 understory_box_tree = { path = "../understory_box_tree" }
+understory_display = { path = "../understory_display" }
+understory_display_vello = { path = "../understory_display_vello" }
 understory_focus = { path = "../understory_focus" }
 understory_index = { path = "../understory_index" }
+ui-events = { workspace = true }
+ui-events-winit = { workspace = true }
+vello = { workspace = true, features = ["wgpu_default"] }
+winit = { workspace = true }
+pollster = "0.3"

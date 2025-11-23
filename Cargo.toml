@@ -5,6 +5,8 @@ members = [
   "understory_box_tree",
   "understory_focus",
   "understory_responder",
+  "understory_display",
+  "understory_display_vello",
   "benches",
   "examples",
 ]
@@ -19,9 +21,12 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/endoli/understory"
 
 [workspace.dependencies]
-# Kurbo supports no_std via its `libm` feature. Disable default features here and
-# let member crates opt into `std` or `libm` explicitly via their own features.
 kurbo = { version = "0.12.0", default-features = false }
+peniko = { version = "0.5.0", default-features = false }
+ui-events = { version = "0.2.0" }
+ui-events-winit = { version = "0.2.0" }
+vello = { version = "0.6", default-features = false }
+winit = { version = "0.30" }
 bitflags = "2.10.0"
 
 [workspace.lints]
