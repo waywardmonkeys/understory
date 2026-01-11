@@ -10,7 +10,7 @@
 use core::time::Duration;
 use criterion::measurement::WallTime;
 use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+    BatchSize, BenchmarkGroup, BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
 };
 use kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii, Vec2};
 use serde::Deserialize;
@@ -94,12 +94,18 @@ fn build_tree_from_json<B: Backend<f64>>(
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
     let dump: DumpNode =
         serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("invalid JSON {path:?}: {e}"));
+    build_tree_from_dump(backend, &dump)
+}
 
+fn build_tree_from_dump<B: Backend<f64>>(
+    backend: B,
+    dump: &DumpNode,
+) -> (Tree<B>, Vec<NodeId>, BuildStats) {
     let mut tree = Tree::with_backend(backend);
     let mut ids = Vec::new();
     let mut stats = BuildStats::default();
 
-    build_subtree_from_dump(&mut tree, &mut ids, &mut stats, None, &dump, 1);
+    build_subtree_from_dump(&mut tree, &mut ids, &mut stats, None, dump, 1);
     let _ = tree.commit();
     (tree, ids, stats)
 }
@@ -447,6 +453,15 @@ fn build_ui_box_tree<B: Backend<f64>>(backend: B) -> (Tree<B>, Vec<NodeId>, Buil
     build_synthetic_ui_box_tree(backend)
 }
 
+fn load_dump_from_env() -> Option<DumpNode> {
+    let path = std::env::var(ENV_JSON_PATH).ok()?;
+    let bytes =
+        fs::read(Path::new(&path)).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+    let dump: DumpNode =
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("invalid JSON {path:?}: {e}"));
+    Some(dump)
+}
+
 fn bench_hit_test<B: Backend<f64>>(g: &mut BenchmarkGroup<'_, WallTime>, name: &str, backend: B) {
     let (tree, _ids, _stats) = build_ui_box_tree(backend);
     let pts = points();
@@ -524,97 +539,160 @@ fn bench_commit_one_bounds<B: Backend<f64>>(
     );
 }
 
+fn bench_build_and_commit<B, F>(
+    g: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    dump: Option<&DumpNode>,
+    make_backend: F,
+) where
+    B: Backend<f64>,
+    F: Fn() -> B + Copy,
+{
+    g.bench_with_input(BenchmarkId::new("build_and_commit", name), &name, |b, _| {
+        b.iter_batched(
+            make_backend,
+            |backend| {
+                if let Some(dump) = dump {
+                    black_box(build_tree_from_dump(backend, dump));
+                } else {
+                    black_box(build_synthetic_ui_box_tree(backend));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn ui_box_tree(c: &mut Criterion) {
-    // Keep these short: they rebuild a sizable tree.
-    let mut g = c.benchmark_group("ui_box_tree");
-    g.warm_up_time(Duration::from_secs(1));
-    g.measurement_time(Duration::from_secs(3));
+    let dump = load_dump_from_env();
 
-    // Hit testing.
-    bench_hit_test(
-        &mut g,
-        "flatvec",
-        understory_index::backends::FlatVec::<f64>::default(),
-    );
-    bench_hit_test(
-        &mut g,
-        "grid_f64_100",
-        understory_index::backends::GridF64::new(100.0),
-    );
-    bench_hit_test(
-        &mut g,
-        "rtree_f64",
-        understory_index::backends::RTreeF64::<()>::default(),
-    );
-    bench_hit_test(
-        &mut g,
-        "bvh_f64",
-        understory_index::backends::BvhF64::default(),
-    );
+    {
+        // Keep these short: they rebuild a sizable tree once per benchmark.
+        let mut g = c.benchmark_group("ui_box_tree");
+        g.warm_up_time(Duration::from_secs(1));
+        g.measurement_time(Duration::from_secs(3));
 
-    // Commit.
-    bench_commit_noop(
-        &mut g,
-        "flatvec",
-        understory_index::backends::FlatVec::<f64>::default(),
-    );
-    bench_commit_one_transform(
-        &mut g,
-        "flatvec",
-        understory_index::backends::FlatVec::<f64>::default(),
-    );
-    bench_commit_one_bounds(
-        &mut g,
-        "flatvec",
-        understory_index::backends::FlatVec::<f64>::default(),
-    );
-    bench_commit_noop(
-        &mut g,
-        "grid_f64_100",
-        understory_index::backends::GridF64::new(100.0),
-    );
-    bench_commit_one_transform(
-        &mut g,
-        "grid_f64_100",
-        understory_index::backends::GridF64::new(100.0),
-    );
-    bench_commit_one_bounds(
-        &mut g,
-        "grid_f64_100",
-        understory_index::backends::GridF64::new(100.0),
-    );
-    bench_commit_noop(
-        &mut g,
-        "rtree_f64",
-        understory_index::backends::RTreeF64::<()>::default(),
-    );
-    bench_commit_one_transform(
-        &mut g,
-        "rtree_f64",
-        understory_index::backends::RTreeF64::<()>::default(),
-    );
-    bench_commit_one_bounds(
-        &mut g,
-        "rtree_f64",
-        understory_index::backends::RTreeF64::<()>::default(),
-    );
-    bench_commit_noop(
-        &mut g,
-        "bvh_f64",
-        understory_index::backends::BvhF64::default(),
-    );
-    bench_commit_one_transform(
-        &mut g,
-        "bvh_f64",
-        understory_index::backends::BvhF64::default(),
-    );
-    bench_commit_one_bounds(
-        &mut g,
-        "bvh_f64",
-        understory_index::backends::BvhF64::default(),
-    );
+        // Hit testing.
+        bench_hit_test(
+            &mut g,
+            "flatvec",
+            understory_index::backends::FlatVec::<f64>::default(),
+        );
+        bench_hit_test(
+            &mut g,
+            "grid_f64_100",
+            understory_index::backends::GridF64::new(100.0),
+        );
+        bench_hit_test(
+            &mut g,
+            "rtree_f64",
+            understory_index::backends::RTreeF64::<()>::default(),
+        );
+        bench_hit_test(
+            &mut g,
+            "bvh_f64",
+            understory_index::backends::BvhF64::default(),
+        );
 
-    g.finish();
+        // Commit.
+        bench_commit_noop(
+            &mut g,
+            "flatvec",
+            understory_index::backends::FlatVec::<f64>::default(),
+        );
+        bench_commit_one_transform(
+            &mut g,
+            "flatvec",
+            understory_index::backends::FlatVec::<f64>::default(),
+        );
+        bench_commit_one_bounds(
+            &mut g,
+            "flatvec",
+            understory_index::backends::FlatVec::<f64>::default(),
+        );
+        bench_commit_noop(
+            &mut g,
+            "grid_f64_100",
+            understory_index::backends::GridF64::new(100.0),
+        );
+        bench_commit_one_transform(
+            &mut g,
+            "grid_f64_100",
+            understory_index::backends::GridF64::new(100.0),
+        );
+        bench_commit_one_bounds(
+            &mut g,
+            "grid_f64_100",
+            understory_index::backends::GridF64::new(100.0),
+        );
+        bench_commit_noop(
+            &mut g,
+            "rtree_f64",
+            understory_index::backends::RTreeF64::<()>::default(),
+        );
+        bench_commit_one_transform(
+            &mut g,
+            "rtree_f64",
+            understory_index::backends::RTreeF64::<()>::default(),
+        );
+        bench_commit_one_bounds(
+            &mut g,
+            "rtree_f64",
+            understory_index::backends::RTreeF64::<()>::default(),
+        );
+        bench_commit_noop(
+            &mut g,
+            "bvh_f64",
+            understory_index::backends::BvhF64::default(),
+        );
+        bench_commit_one_transform(
+            &mut g,
+            "bvh_f64",
+            understory_index::backends::BvhF64::default(),
+        );
+        bench_commit_one_bounds(
+            &mut g,
+            "bvh_f64",
+            understory_index::backends::BvhF64::default(),
+        );
+
+        g.finish();
+    }
+
+    // Full rebuild (tree construction + commit). This is the cost you pay on initial build or
+    // when doing a full rebuild from scratch.
+    {
+        let mut g_build = c.benchmark_group("ui_box_tree_build");
+        g_build.warm_up_time(Duration::from_secs(1));
+        g_build.measurement_time(Duration::from_secs(3));
+
+        bench_build_and_commit::<understory_index::backends::FlatVec<f64>, _>(
+            &mut g_build,
+            "flatvec",
+            dump.as_ref(),
+            understory_index::backends::FlatVec::<f64>::default,
+        );
+        bench_build_and_commit::<understory_index::backends::GridF64, _>(
+            &mut g_build,
+            "grid_f64_100",
+            dump.as_ref(),
+            || understory_index::backends::GridF64::new(100.0),
+        );
+        bench_build_and_commit::<understory_index::backends::RTreeF64<()>, _>(
+            &mut g_build,
+            "rtree_f64",
+            dump.as_ref(),
+            understory_index::backends::RTreeF64::<()>::default,
+        );
+        bench_build_and_commit::<understory_index::backends::BvhF64, _>(
+            &mut g_build,
+            "bvh_f64",
+            dump.as_ref(),
+            understory_index::backends::BvhF64::default,
+        );
+
+        g_build.finish();
+    }
 }
 
 criterion_group!(benches, ui_box_tree);

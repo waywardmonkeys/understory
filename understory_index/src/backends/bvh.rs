@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Binary bounding hierarchy backend generic over scalar `T: Scalar`.
+//!
+//! This is a simple, allocation-friendly BVH intended for dynamic workloads.
+//!
+//! - Inserts use a greedy descent and occasionally split leaves using an SAH-like heuristic.
+//! - Updates are handled by *refitting* ancestor bounds instead of remove+reinsert.
+//!   This keeps small per-frame changes cheap, but can make the tree "looser" over time.
+//! - Queries use an explicit stack (with a small inline fast-path) and aggressively
+//!   early-exit/prune to reduce overhead.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -12,10 +20,15 @@ use crate::types::{Aabb2D, Scalar};
 
 /// A simple BVH backend using SAH-like splits.
 pub struct Bvh<T: Scalar> {
+    /// Maximum number of items stored in a leaf before we split it.
     max_leaf: usize,
     root: Option<NodeIdx>,
+    /// Node storage. Nodes are never removed; empty subtrees are represented via `Node::count == 0`.
     arena: Vec<Node<T>>,
     slots: Vec<Option<Aabb2D<T>>>,
+    /// Maps each slot to the leaf node currently holding it, enabling O(1) update/remove.
+    ///
+    /// This is kept in sync on insert (including leaf splits).
     slot_leaf: Vec<Option<NodeIdx>>,
 }
 
@@ -25,8 +38,14 @@ enum Kind<T: Scalar> {
 }
 
 struct Node<T: Scalar> {
+    /// Parent pointer for refitting after updates/removals.
     parent: Option<NodeIdx>,
+    /// Bounding box for the subtree. Meaningful only when `count > 0`.
     bbox: Aabb2D<T>,
+    /// Number of live items in this subtree.
+    ///
+    /// We keep this so empty subtrees can be pruned quickly (and so we can compute parent
+    /// bounds without scanning children).
     count: usize,
     kind: Kind<T>,
 }
@@ -64,6 +83,7 @@ type BvhBestSplit<TS> = Option<(crate::types::ScalarAcc<TS>, BvhItems<TS>, BvhIt
 const INLINE_STACK_CAP: usize = 64;
 
 impl<T: Scalar> Bvh<T> {
+    /// Ensure backing arrays are large enough for `slot` and record the latest AABB for it.
     fn ensure_slot(&mut self, slot: usize, bbox: Aabb2D<T>) {
         if self.slots.len() <= slot {
             self.slots.resize_with(slot + 1, || None);
@@ -90,6 +110,7 @@ impl<T: Scalar> Bvh<T> {
     fn bbox_children(arena: &[Node<T>], left: NodeIdx, right: NodeIdx) -> Aabb2D<T> {
         let l = &arena[left.get()];
         let r = &arena[right.get()];
+        // Treat empty subtrees as "not contributing" to the parent bound.
         match (l.count, r.count) {
             (0, 0) => Aabb2D::new(T::zero(), T::zero(), T::zero(), T::zero()),
             (0, _) => r.bbox,
@@ -178,6 +199,8 @@ impl<T: Scalar> Bvh<T> {
                 };
                 arena[node_idx].count += 1;
                 let new_kind = if items.len() > max_leaf {
+                    // Split this leaf into two child leaves. We keep the existing node index as
+                    // the internal parent so pointers to it remain valid.
                     let (l, r) = Self::split_sah(items, max_leaf);
                     let l_idx = arena.len();
                     arena.push(Node {
@@ -195,6 +218,7 @@ impl<T: Scalar> Bvh<T> {
                     });
                     let left = NodeIdx::new(l_idx);
                     let right = NodeIdx::new(r_idx);
+                    // Rebuild slot→leaf mappings for the moved items.
                     for &(s, _) in match &arena[l_idx].kind {
                         Kind::Leaf(items) => items,
                         Kind::Internal { .. } => unreachable!("new nodes are leaves"),
@@ -219,6 +243,7 @@ impl<T: Scalar> Bvh<T> {
             Kind::Internal { left, right } => {
                 let lb = arena[left.get()].bbox;
                 let rb = arena[right.get()].bbox;
+                // Descend into whichever child would expand the least (greedy).
                 let cost_l = lb.union(bbox).area() - lb.area();
                 let cost_r = rb.union(bbox).area() - rb.area();
                 if cost_l <= cost_r {
@@ -235,6 +260,8 @@ impl<T: Scalar> Bvh<T> {
     }
 
     fn refit_upwards(&mut self, mut node_idx: NodeIdx) {
+        // Walk up to the root recomputing parent bounds from their children. Stop early once the
+        // parent is unchanged to avoid doing work for stable subtrees.
         loop {
             let parent = self.arena[node_idx.get()].parent;
             let Some(parent_idx) = parent else {
@@ -266,6 +293,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         self.ensure_slot(slot, aabb);
         match self.root {
             None => {
+                // First insert creates a single-leaf tree.
                 let idx = self.arena.len();
                 self.arena.push(Node {
                     parent: None,
@@ -345,6 +373,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         if let Some(root) = self.root
             && self.arena[root.get()].count == 0
         {
+            // The tree is empty; reset to keep memory use bounded and keep invariants simple.
             self.root = None;
             self.arena.clear();
             self.slots.clear();
@@ -366,6 +395,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         if self.arena[root_idx.get()].count == 0 {
             return;
         }
+        // Early-exit: if the point is outside the root bound, nothing can match.
         if !self.arena[root_idx.get()].bbox.contains_point(x, y) {
             return;
         }
@@ -392,9 +422,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
-                    if self.arena[left.get()].count == 0 && self.arena[right.get()].count == 0 {
-                        continue;
-                    }
+                    // Prefilter children before pushing them: avoids work in high-fanout trees.
                     let lb = self.arena[left.get()].bbox;
                     let rb = self.arena[right.get()].bbox;
                     if rb.contains_point(x, y) {
@@ -425,6 +453,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         if self.arena[root_idx.get()].count == 0 {
             return;
         }
+        // Early-exit: if the query rect doesn't overlap the root bound, nothing can match.
         if !self.arena[root_idx.get()].bbox.overlaps(&rect) {
             return;
         }
@@ -451,9 +480,7 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
-                    if self.arena[left.get()].count == 0 && self.arena[right.get()].count == 0 {
-                        continue;
-                    }
+                    // Prefilter children before pushing them: avoids work in high-fanout trees.
                     let lb = self.arena[left.get()].bbox;
                     let rb = self.arena[right.get()].bbox;
                     if rb.overlaps(&rect) {
