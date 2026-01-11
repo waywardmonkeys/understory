@@ -16,6 +16,7 @@ pub struct Bvh<T: Scalar> {
     root: Option<NodeIdx>,
     arena: Vec<Node<T>>,
     slots: Vec<Option<Aabb2D<T>>>,
+    slot_leaf: Vec<Option<NodeIdx>>,
 }
 
 enum Kind<T: Scalar> {
@@ -24,7 +25,9 @@ enum Kind<T: Scalar> {
 }
 
 struct Node<T: Scalar> {
+    parent: Option<NodeIdx>,
     bbox: Aabb2D<T>,
+    count: usize,
     kind: Kind<T>,
 }
 
@@ -48,6 +51,7 @@ impl<T: Scalar> Default for Bvh<T> {
             root: None,
             arena: Vec::new(),
             slots: Vec::new(),
+            slot_leaf: Vec::new(),
         }
     }
 }
@@ -64,6 +68,9 @@ impl<T: Scalar> Bvh<T> {
         if self.slots.len() <= slot {
             self.slots.resize_with(slot + 1, || None);
         }
+        if self.slot_leaf.len() <= slot {
+            self.slot_leaf.resize_with(slot + 1, || None);
+        }
         self.slots[slot] = Some(bbox);
     }
 
@@ -77,6 +84,17 @@ impl<T: Scalar> Bvh<T> {
             acc
         } else {
             Aabb2D::new(T::zero(), T::zero(), T::zero(), T::zero())
+        }
+    }
+
+    fn bbox_children(arena: &[Node<T>], left: NodeIdx, right: NodeIdx) -> Aabb2D<T> {
+        let l = &arena[left.get()];
+        let r = &arena[right.get()];
+        match (l.count, r.count) {
+            (0, 0) => Aabb2D::new(T::zero(), T::zero(), T::zero(), T::zero()),
+            (0, _) => r.bbox,
+            (_, 0) => l.bbox,
+            (_, _) => l.bbox.union(r.bbox),
         }
     }
 
@@ -142,6 +160,7 @@ impl<T: Scalar> Bvh<T> {
 
     fn insert_node(
         arena: &mut Vec<Node<T>>,
+        slot_leaf: &mut Vec<Option<NodeIdx>>,
         node_idx: usize,
         slot: usize,
         bbox: Aabb2D<T>,
@@ -151,24 +170,46 @@ impl<T: Scalar> Bvh<T> {
         match kind {
             Kind::Leaf(mut items) => {
                 items.push((slot, bbox));
-                let mut node_bbox = arena[node_idx].bbox.union(bbox);
+                slot_leaf[slot] = Some(NodeIdx::new(node_idx));
+                let mut node_bbox = if arena[node_idx].count == 0 {
+                    bbox
+                } else {
+                    arena[node_idx].bbox.union(bbox)
+                };
+                arena[node_idx].count += 1;
                 let new_kind = if items.len() > max_leaf {
                     let (l, r) = Self::split_sah(items, max_leaf);
                     let l_idx = arena.len();
                     arena.push(Node {
+                        parent: Some(NodeIdx::new(node_idx)),
                         bbox: Self::bbox_items(&l),
+                        count: l.len(),
                         kind: Kind::Leaf(l),
                     });
                     let r_idx = arena.len();
                     arena.push(Node {
+                        parent: Some(NodeIdx::new(node_idx)),
                         bbox: Self::bbox_items(&r),
+                        count: r.len(),
                         kind: Kind::Leaf(r),
                     });
-                    node_bbox = arena[l_idx].bbox.union(arena[r_idx].bbox);
-                    Kind::Internal {
-                        left: NodeIdx::new(l_idx),
-                        right: NodeIdx::new(r_idx),
+                    let left = NodeIdx::new(l_idx);
+                    let right = NodeIdx::new(r_idx);
+                    for &(s, _) in match &arena[l_idx].kind {
+                        Kind::Leaf(items) => items,
+                        Kind::Internal { .. } => unreachable!("new nodes are leaves"),
+                    } {
+                        slot_leaf[s] = Some(left);
                     }
+                    for &(s, _) in match &arena[r_idx].kind {
+                        Kind::Leaf(items) => items,
+                        Kind::Internal { .. } => unreachable!("new nodes are leaves"),
+                    } {
+                        slot_leaf[s] = Some(right);
+                    }
+                    arena[node_idx].count = arena[l_idx].count + arena[r_idx].count;
+                    node_bbox = Self::bbox_children(arena, left, right);
+                    Kind::Internal { left, right }
                 } else {
                     Kind::Leaf(items)
                 };
@@ -181,68 +222,42 @@ impl<T: Scalar> Bvh<T> {
                 let cost_l = lb.union(bbox).area() - lb.area();
                 let cost_r = rb.union(bbox).area() - rb.area();
                 if cost_l <= cost_r {
-                    Self::insert_node(arena, left.get(), slot, bbox, max_leaf);
+                    Self::insert_node(arena, slot_leaf, left.get(), slot, bbox, max_leaf);
                 } else {
-                    Self::insert_node(arena, right.get(), slot, bbox, max_leaf);
+                    Self::insert_node(arena, slot_leaf, right.get(), slot, bbox, max_leaf);
                 }
-                let node_bbox = arena[node_idx].bbox.union(bbox);
+                arena[node_idx].count = arena[left.get()].count + arena[right.get()].count;
+                let node_bbox = Self::bbox_children(arena, left, right);
                 arena[node_idx].kind = Kind::Internal { left, right };
                 arena[node_idx].bbox = node_bbox;
             }
         }
     }
 
-    fn remove_node(
-        arena: &mut Vec<Node<T>>,
-        node_idx: usize,
-        slot: usize,
-        old: &Aabb2D<T>,
-    ) -> bool {
-        if !arena[node_idx].bbox.overlaps(old) {
-            return false;
+    fn refit_upwards(&mut self, mut node_idx: NodeIdx) {
+        loop {
+            let parent = self.arena[node_idx.get()].parent;
+            let Some(parent_idx) = parent else {
+                break;
+            };
+            let parent_i = parent_idx.get();
+
+            let Kind::Internal { left, right } = self.arena[parent_i].kind else {
+                break;
+            };
+            let new_count = self.arena[left.get()].count + self.arena[right.get()].count;
+            let new_bbox = Self::bbox_children(&self.arena, left, right);
+
+            let old_count = self.arena[parent_i].count;
+            let old_bbox = self.arena[parent_i].bbox;
+            self.arena[parent_i].count = new_count;
+            self.arena[parent_i].bbox = new_bbox;
+
+            if old_count == new_count && old_bbox == new_bbox {
+                break;
+            }
+            node_idx = parent_idx;
         }
-        let kind = core::mem::replace(&mut arena[node_idx].kind, Kind::Leaf(Vec::new()));
-        let (new_kind, new_bbox, removed) = match kind {
-            Kind::Leaf(mut items) => {
-                let before = items.len();
-                items.retain(|(s, _)| *s != slot);
-                let removed = items.len() != before;
-                let bbox = Self::bbox_items(&items);
-                (Kind::Leaf(items), bbox, removed)
-            }
-            Kind::Internal { left, right } => {
-                let removed = Self::remove_node(arena, left.get(), slot, old)
-                    | Self::remove_node(arena, right.get(), slot, old);
-                let is_left_empty =
-                    matches!(arena[left.get()].kind, Kind::Leaf(ref v) if v.is_empty());
-                let is_right_empty =
-                    matches!(arena[right.get()].kind, Kind::Leaf(ref v) if v.is_empty());
-                if removed {
-                    if is_left_empty && !is_right_empty {
-                        let kind = core::mem::replace(
-                            &mut arena[right.get()].kind,
-                            Kind::Leaf(Vec::new()),
-                        );
-                        let bbox = arena[right.get()].bbox;
-                        (kind, bbox, true)
-                    } else if is_right_empty && !is_left_empty {
-                        let kind =
-                            core::mem::replace(&mut arena[left.get()].kind, Kind::Leaf(Vec::new()));
-                        let bbox = arena[left.get()].bbox;
-                        (kind, bbox, true)
-                    } else {
-                        let bbox = arena[left.get()].bbox.union(arena[right.get()].bbox);
-                        (Kind::Internal { left, right }, bbox, true)
-                    }
-                } else {
-                    let bbox = arena[left.get()].bbox.union(arena[right.get()].bbox);
-                    (Kind::Internal { left, right }, bbox, false)
-                }
-            }
-        };
-        arena[node_idx].kind = new_kind;
-        arena[node_idx].bbox = new_bbox;
-        removed
     }
 }
 
@@ -253,34 +268,87 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
             None => {
                 let idx = self.arena.len();
                 self.arena.push(Node {
+                    parent: None,
                     bbox: aabb,
+                    count: 1,
                     kind: Kind::Leaf(vec![(slot, aabb)]),
                 });
                 self.root = Some(NodeIdx::new(idx));
+                self.slot_leaf[slot] = Some(NodeIdx::new(idx));
             }
             Some(root_idx) => {
-                Self::insert_node(&mut self.arena, root_idx.get(), slot, aabb, self.max_leaf);
+                Self::insert_node(
+                    &mut self.arena,
+                    &mut self.slot_leaf,
+                    root_idx.get(),
+                    slot,
+                    aabb,
+                    self.max_leaf,
+                );
             }
         }
     }
 
     fn update(&mut self, slot: usize, aabb: Aabb2D<T>) {
-        if let Some(old) = self.slots.get(slot).and_then(|x| *x)
-            && let Some(root_idx) = self.root
-        {
-            let _ = Self::remove_node(&mut self.arena, root_idx.get(), slot, &old);
-        }
-        self.insert(slot, aabb);
+        let Some(leaf) = self.slot_leaf.get(slot).and_then(|v| *v) else {
+            self.insert(slot, aabb);
+            return;
+        };
+        self.ensure_slot(slot, aabb);
+
+        let leaf_i = leaf.get();
+        let (new_bbox, new_count) = {
+            let Kind::Leaf(items) = &mut self.arena[leaf_i].kind else {
+                self.insert(slot, aabb);
+                return;
+            };
+            let mut found = false;
+            for (s, bb) in items.iter_mut() {
+                if *s == slot {
+                    *bb = aabb;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                self.insert(slot, aabb);
+                return;
+            }
+            (Self::bbox_items(items), items.len())
+        };
+
+        self.arena[leaf_i].bbox = new_bbox;
+        self.arena[leaf_i].count = new_count;
+        self.refit_upwards(leaf);
     }
 
     fn remove(&mut self, slot: usize) {
-        if let Some(old) = self.slots.get(slot).and_then(|x| *x)
-            && let Some(root_idx) = self.root
+        let Some(leaf) = self.slot_leaf.get_mut(slot).and_then(|v| v.take()) else {
+            return;
+        };
+        if let Some(s) = self.slots.get_mut(slot) {
+            *s = None;
+        }
+
+        let leaf_i = leaf.get();
+        let (new_bbox, new_count) = {
+            let Kind::Leaf(items) = &mut self.arena[leaf_i].kind else {
+                return;
+            };
+            items.retain(|(s, _)| *s != slot);
+            (Self::bbox_items(items), items.len())
+        };
+        self.arena[leaf_i].bbox = new_bbox;
+        self.arena[leaf_i].count = new_count;
+        self.refit_upwards(leaf);
+
+        if let Some(root) = self.root
+            && self.arena[root.get()].count == 0
         {
-            let _ = Self::remove_node(&mut self.arena, root_idx.get(), slot, &old);
-            if let Some(s) = self.slots.get_mut(slot) {
-                *s = None;
-            }
+            self.root = None;
+            self.arena.clear();
+            self.slots.clear();
+            self.slot_leaf.clear();
         }
     }
 
@@ -288,12 +356,16 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         self.root = None;
         self.arena.clear();
         self.slots.clear();
+        self.slot_leaf.clear();
     }
 
     fn visit_point<F: FnMut(usize)>(&self, x: T, y: T, mut f: F) {
         let Some(root_idx) = self.root else {
             return;
         };
+        if self.arena[root_idx.get()].count == 0 {
+            return;
+        }
         if !self.arena[root_idx.get()].bbox.contains_point(x, y) {
             return;
         }
@@ -308,6 +380,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
             })
         }) {
             let n = &self.arena[i.get()];
+            if n.count == 0 {
+                continue;
+            }
             match &n.kind {
                 Kind::Leaf(items) => {
                     for (s, b) in items {
@@ -317,6 +392,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
+                    if self.arena[left.get()].count == 0 && self.arena[right.get()].count == 0 {
+                        continue;
+                    }
                     let lb = self.arena[left.get()].bbox;
                     let rb = self.arena[right.get()].bbox;
                     if rb.contains_point(x, y) {
@@ -344,6 +422,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         let Some(root_idx) = self.root else {
             return;
         };
+        if self.arena[root_idx.get()].count == 0 {
+            return;
+        }
         if !self.arena[root_idx.get()].bbox.overlaps(&rect) {
             return;
         }
@@ -358,6 +439,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
             })
         }) {
             let n = &self.arena[i.get()];
+            if n.count == 0 {
+                continue;
+            }
             match &n.kind {
                 Kind::Leaf(items) => {
                     for (s, b) in items {
@@ -367,6 +451,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
+                    if self.arena[left.get()].count == 0 && self.arena[right.get()].count == 0 {
+                        continue;
+                    }
                     let lb = self.arena[left.get()].bbox;
                     let rb = self.arena[right.get()].bbox;
                     if rb.overlaps(&rect) {
