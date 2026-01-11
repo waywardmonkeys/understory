@@ -54,6 +54,7 @@ pub struct Tree<B: Backend<f64> = FlatVec<f64>> {
     pub(crate) free_list: Vec<usize>,
     pub(crate) epoch: u64,
     pub(crate) index: IndexGeneric<f64, NodeId, B>,
+    needs_commit: bool,
 }
 
 impl<B: Backend<f64> + core::fmt::Debug> core::fmt::Debug for Tree<B> {
@@ -199,6 +200,7 @@ impl Tree {
             free_list: Vec::new(),
             epoch: 0,
             index: IndexGeneric::new(),
+            needs_commit: false,
         }
     }
 }
@@ -212,6 +214,18 @@ impl<B: Backend<f64>> Tree<B> {
             free_list: Vec::new(),
             epoch: 0,
             index: IndexGeneric::with_backend(backend),
+            needs_commit: false,
+        }
+    }
+
+    #[inline]
+    fn debug_assert_committed(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                !self.needs_commit,
+                "Tree queries require calling `Tree::commit()` after mutations"
+            );
         }
     }
 
@@ -262,6 +276,7 @@ impl<B: Backend<f64>> Tree<B> {
         if let Some(p) = parent {
             self.link_parent(id, p);
         }
+        self.needs_commit = true;
         id
     }
 
@@ -273,6 +288,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !self.is_alive(id) {
             return;
         }
+        self.needs_commit = true;
         if let Some(parent) = self.node(id).parent {
             self.unlink_parent(id, parent);
         }
@@ -295,6 +311,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !self.is_alive(id) {
             return;
         }
+        self.needs_commit = true;
         if let Some(parent) = self.node(id).parent {
             self.unlink_parent(id, parent);
         }
@@ -323,6 +340,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !needs_update {
             return;
         }
+        self.needs_commit = true;
         let n = self
             .node_opt_mut(id)
             .expect("liveness checked by needs_update");
@@ -341,6 +359,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !needs_update {
             return;
         }
+        self.needs_commit = true;
         let n = self
             .node_opt_mut(id)
             .expect("liveness checked by needs_update");
@@ -369,6 +388,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !needs_update {
             return;
         }
+        self.needs_commit = true;
         let n = self
             .node_opt_mut(id)
             .expect("liveness checked by needs_update");
@@ -402,6 +422,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !self.is_alive(id) {
             return None;
         }
+        self.debug_assert_committed();
         self.nodes
             .get(id.idx())
             .and_then(|slot| slot.as_ref())
@@ -419,6 +440,7 @@ impl<B: Backend<f64>> Tree<B> {
         if !self.is_alive(id) {
             return None;
         }
+        self.debug_assert_committed();
         self.nodes
             .get(id.idx())
             .and_then(|slot| slot.as_ref())
@@ -443,6 +465,9 @@ impl<B: Backend<f64>> Tree<B> {
     /// regions. Call this after mutating any `LocalNode` fields or tree
     /// structure before issuing queries.
     pub fn commit(&mut self) -> Damage {
+        if !self.needs_commit {
+            return Damage::default();
+        }
         let mut damage = Damage::default();
         let roots: Vec<NodeId> = self
             .nodes
@@ -471,6 +496,7 @@ impl<B: Backend<f64>> Tree<B> {
             damage.dirty_rects.push(r);
         }
 
+        self.needs_commit = false;
         damage
     }
 
@@ -486,6 +512,7 @@ impl<B: Backend<f64>> Tree<B> {
     /// This tie-break is intentionally deterministic for now. In the future this
     /// may be made configurable (for example via a `TieBreakPolicy`).
     pub fn hit_test_point(&self, point: Point, filter: QueryFilter) -> Option<Hit> {
+        self.debug_assert_committed();
         let mut best: Option<(NodeId, i32, u16)> = None;
         self.index.visit_point(point.x, point.y, |_, id| {
             let Some(node) = self.nodes.get(id.idx()).and_then(|slot| slot.as_ref()) else {
@@ -564,6 +591,7 @@ impl<B: Backend<f64>> Tree<B> {
         rect: Rect,
         filter: QueryFilter,
     ) -> impl Iterator<Item = NodeId> + 'a {
+        self.debug_assert_committed();
         let q = rect_to_aabb(rect);
         self.index
             .query_rect(q)
@@ -590,6 +618,7 @@ impl<B: Backend<f64>> Tree<B> {
         point: Point,
         filter: QueryFilter,
     ) -> impl Iterator<Item = NodeId> + 'a {
+        self.debug_assert_committed();
         self.index
             .query_point(point.x, point.y)
             .map(|(_, id)| id)
