@@ -179,7 +179,12 @@ impl<T: Scalar> Bvh<T> {
         (l, r)
     }
 
-    fn split_sah_in_place(items: &mut [BvhItem<T>], max_leaf: usize) -> usize {
+    fn split_sah_in_place(
+        items: &mut [BvhItem<T>],
+        max_leaf: usize,
+        prefix: &mut Vec<Aabb2D<T>>,
+        suffix: &mut Vec<Aabb2D<T>>,
+    ) -> usize {
         let n = items.len();
         debug_assert!(n >= 4, "BVH split requires at least 4 items");
         let min_children = (max_leaf / 2).max(2).min(n.saturating_sub(2));
@@ -206,26 +211,30 @@ impl<T: Scalar> Bvh<T> {
                 }
             });
 
-            let mut prefix: Vec<Aabb2D<T>> = Vec::with_capacity(n);
+            // Precompute prefix/suffix bboxes for O(1) split evaluation, reusing scratch buffers
+            // to avoid allocations on every recursion.
+            prefix.clear();
+            prefix.reserve(n);
             for (i, (_, bb)) in items.iter().enumerate() {
                 if i == 0 {
                     prefix.push(*bb);
                 } else {
-                    let prev = *prefix.last().unwrap();
-                    prefix.push(prev.union(*bb));
+                    prefix.push(prefix[i - 1].union(*bb));
                 }
             }
 
-            let mut suffix: Vec<Aabb2D<T>> = Vec::with_capacity(n);
-            for (i, (_, bb)) in items.iter().enumerate().rev() {
+            suffix.clear();
+            suffix.resize_with(n, || {
+                Aabb2D::new(T::zero(), T::zero(), T::zero(), T::zero())
+            });
+            for i in (0..n).rev() {
+                let bb = items[i].1;
                 if i == n - 1 {
-                    suffix.push(*bb);
+                    suffix[i] = bb;
                 } else {
-                    let prev = *suffix.last().unwrap();
-                    suffix.push(prev.union(*bb));
+                    suffix[i] = suffix[i + 1].union(bb);
                 }
             }
-            suffix.reverse();
 
             for k in min_children..=(n - min_children) {
                 let lb = prefix[k - 1];
@@ -261,7 +270,13 @@ impl<T: Scalar> Bvh<T> {
         best_k
     }
 
-    fn build_node_bulk(&mut self, parent: Option<NodeIdx>, items: &mut [BvhItem<T>]) -> NodeIdx {
+    fn build_node_bulk(
+        &mut self,
+        parent: Option<NodeIdx>,
+        items: &mut [BvhItem<T>],
+        prefix: &mut Vec<Aabb2D<T>>,
+        suffix: &mut Vec<Aabb2D<T>>,
+    ) -> NodeIdx {
         let idx = NodeIdx::new(self.arena.len());
         self.arena.push(Node {
             parent,
@@ -273,7 +288,9 @@ impl<T: Scalar> Bvh<T> {
         if items.len() <= self.max_leaf {
             let bbox = Self::bbox_items(items);
             let count = items.len();
-            let leaf_items = items.to_vec();
+            // Avoid `to_vec` so we can size the allocation once and do a single copy.
+            let mut leaf_items = Vec::with_capacity(items.len());
+            leaf_items.extend_from_slice(items);
             for &(slot, _) in &leaf_items {
                 self.slot_leaf[slot] = Some(idx);
             }
@@ -283,10 +300,10 @@ impl<T: Scalar> Bvh<T> {
             return idx;
         }
 
-        let split = Self::split_sah_in_place(items, self.max_leaf);
+        let split = Self::split_sah_in_place(items, self.max_leaf, prefix, suffix);
         let (left_items, right_items) = items.split_at_mut(split);
-        let left = self.build_node_bulk(Some(idx), left_items);
-        let right = self.build_node_bulk(Some(idx), right_items);
+        let left = self.build_node_bulk(Some(idx), left_items, prefix, suffix);
+        let right = self.build_node_bulk(Some(idx), right_items, prefix, suffix);
 
         let bbox = Self::bbox_children(&self.arena, left, right);
         let count = self.arena[left.get()].count + self.arena[right.get()].count;
@@ -531,7 +548,9 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
 
         // Reserve ~2n nodes (binary tree with leaf fanout).
         self.arena.reserve(work.len().saturating_mul(2));
-        let root = self.build_node_bulk(None, &mut work);
+        let mut prefix: Vec<Aabb2D<T>> = Vec::new();
+        let mut suffix: Vec<Aabb2D<T>> = Vec::new();
+        let root = self.build_node_bulk(None, &mut work, &mut prefix, &mut suffix);
         self.root = Some(root);
     }
 

@@ -573,6 +573,41 @@ impl<T: Scalar, P: Copy + Debug> RTree<T, P> {
 }
 
 impl<T: Scalar, P: Copy + Debug> Backend<T> for RTree<T, P> {
+    fn bulk_load(&mut self, items: &[(usize, Aabb2D<T>)]) {
+        if items.is_empty() {
+            return;
+        }
+
+        // If we're not empty, preserve existing entries and fall back to incremental inserts.
+        if self.root.is_some() {
+            for &(slot, aabb) in items {
+                self.insert(slot, aabb);
+            }
+            return;
+        }
+
+        let max_children = self.max_children;
+        let min_children = self.min_children;
+        let mut sorted = items.to_vec();
+        let mut arena: Vec<RNode<T, P>> = Vec::new();
+        let root = Self::bulk_build_nodes(&mut arena, &mut sorted[..], max_children);
+
+        let mut slots: Vec<Option<Aabb2D<T>>> = Vec::new();
+        for (slot, bbox) in items.iter().copied() {
+            if slots.len() <= slot {
+                slots.resize_with(slot + 1, || None);
+            }
+            slots[slot] = Some(bbox);
+        }
+
+        self.max_children = max_children;
+        self.min_children = min_children;
+        self.root = root;
+        self.arena = arena;
+        self.child_indices_scratch.clear();
+        self.slots = slots;
+    }
+
     fn insert(&mut self, slot: usize, aabb: Aabb2D<T>) {
         self.ensure_slot(slot, aabb);
         match self.root {
