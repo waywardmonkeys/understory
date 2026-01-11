@@ -57,6 +57,8 @@ type BvhItem<TS> = (usize, Aabb2D<TS>);
 type BvhItems<TS> = Vec<BvhItem<TS>>;
 type BvhBestSplit<TS> = Option<(crate::types::ScalarAcc<TS>, BvhItems<TS>, BvhItems<TS>)>;
 
+const INLINE_STACK_CAP: usize = 64;
+
 impl<T: Scalar> Bvh<T> {
     fn ensure_slot(&mut self, slot: usize, bbox: Aabb2D<T>) {
         if self.slots.len() <= slot {
@@ -292,12 +294,20 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         let Some(root_idx) = self.root else {
             return;
         };
-        let mut stack = vec![root_idx];
-        while let Some(i) = stack.pop() {
+        if !self.arena[root_idx.get()].bbox.contains_point(x, y) {
+            return;
+        }
+        let mut inline = [root_idx; INLINE_STACK_CAP];
+        let mut inline_len = 1_usize;
+        let mut heap_stack = Vec::new();
+
+        while let Some(i) = heap_stack.pop().or_else(|| {
+            (inline_len > 0).then(|| {
+                inline_len -= 1;
+                inline[inline_len]
+            })
+        }) {
             let n = &self.arena[i.get()];
-            if !n.bbox.contains_point(x, y) {
-                continue;
-            }
             match &n.kind {
                 Kind::Leaf(items) => {
                     for (s, b) in items {
@@ -307,8 +317,24 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
-                    stack.push(*left);
-                    stack.push(*right);
+                    let lb = self.arena[left.get()].bbox;
+                    let rb = self.arena[right.get()].bbox;
+                    if rb.contains_point(x, y) {
+                        if !heap_stack.is_empty() || inline_len == inline.len() {
+                            heap_stack.push(*right);
+                        } else {
+                            inline[inline_len] = *right;
+                            inline_len += 1;
+                        }
+                    }
+                    if lb.contains_point(x, y) {
+                        if !heap_stack.is_empty() || inline_len == inline.len() {
+                            heap_stack.push(*left);
+                        } else {
+                            inline[inline_len] = *left;
+                            inline_len += 1;
+                        }
+                    }
                 }
             }
         }
@@ -318,12 +344,20 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         let Some(root_idx) = self.root else {
             return;
         };
-        let mut stack = vec![root_idx];
-        while let Some(i) = stack.pop() {
+        if !self.arena[root_idx.get()].bbox.overlaps(&rect) {
+            return;
+        }
+        let mut inline = [root_idx; INLINE_STACK_CAP];
+        let mut inline_len = 1_usize;
+        let mut heap_stack = Vec::new();
+
+        while let Some(i) = heap_stack.pop().or_else(|| {
+            (inline_len > 0).then(|| {
+                inline_len -= 1;
+                inline[inline_len]
+            })
+        }) {
             let n = &self.arena[i.get()];
-            if !n.bbox.overlaps(&rect) {
-                continue;
-            }
             match &n.kind {
                 Kind::Leaf(items) => {
                     for (s, b) in items {
@@ -333,8 +367,24 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                     }
                 }
                 Kind::Internal { left, right } => {
-                    stack.push(*left);
-                    stack.push(*right);
+                    let lb = self.arena[left.get()].bbox;
+                    let rb = self.arena[right.get()].bbox;
+                    if rb.overlaps(&rect) {
+                        if !heap_stack.is_empty() || inline_len == inline.len() {
+                            heap_stack.push(*right);
+                        } else {
+                            inline[inline_len] = *right;
+                            inline_len += 1;
+                        }
+                    }
+                    if lb.overlaps(&rect) {
+                        if !heap_stack.is_empty() || inline_len == inline.len() {
+                            heap_stack.push(*left);
+                        } else {
+                            inline[inline_len] = *left;
+                            inline_len += 1;
+                        }
+                    }
                 }
             }
         }
