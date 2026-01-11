@@ -932,10 +932,61 @@ impl<B: Backend<f64>> Tree<B> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use alloc::vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use kurbo::Vec2;
 
     use super::*;
+
+    #[derive(Default)]
+    struct BackendCounts {
+        inserts: AtomicUsize,
+        updates: AtomicUsize,
+        removes: AtomicUsize,
+        clears: AtomicUsize,
+    }
+
+    struct CountingBackend<B> {
+        inner: B,
+        counts: Arc<BackendCounts>,
+    }
+
+    impl<B> CountingBackend<B> {
+        fn new(inner: B, counts: Arc<BackendCounts>) -> Self {
+            Self { inner, counts }
+        }
+    }
+
+    impl<B: Backend<f64>> Backend<f64> for CountingBackend<B> {
+        fn insert(&mut self, slot: usize, aabb: understory_index::Aabb2D<f64>) {
+            self.counts.inserts.fetch_add(1, Ordering::Relaxed);
+            self.inner.insert(slot, aabb);
+        }
+
+        fn update(&mut self, slot: usize, aabb: understory_index::Aabb2D<f64>) {
+            self.counts.updates.fetch_add(1, Ordering::Relaxed);
+            self.inner.update(slot, aabb);
+        }
+
+        fn remove(&mut self, slot: usize) {
+            self.counts.removes.fetch_add(1, Ordering::Relaxed);
+            self.inner.remove(slot);
+        }
+
+        fn clear(&mut self) {
+            self.counts.clears.fetch_add(1, Ordering::Relaxed);
+            self.inner.clear();
+        }
+
+        fn visit_point<F: FnMut(usize)>(&self, x: f64, y: f64, f: F) {
+            self.inner.visit_point(x, y, f);
+        }
+
+        fn visit_rect<F: FnMut(usize)>(&self, rect: understory_index::Aabb2D<f64>, f: F) {
+            self.inner.visit_rect(rect, f);
+        }
+    }
 
     /// Returns whether the two sets of node IDs are equal. The two sets do not need to be ordered.
     ///
@@ -955,6 +1006,90 @@ mod tests {
             }
         }
         a.len() == b.len() && b.iter().all(|node| a.contains(node))
+    }
+
+    #[test]
+    fn commit_noop_does_not_touch_backend() {
+        let counts = Arc::new(BackendCounts::default());
+        let backend = CountingBackend::new(FlatVec::<f64>::default(), counts.clone());
+        let mut tree: Tree<CountingBackend<FlatVec<f64>>> = Tree::with_backend(backend);
+
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                ..Default::default()
+            },
+        );
+        tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 5.0, 5.0),
+                ..Default::default()
+            },
+        );
+        let _ = tree.commit();
+
+        let inserts0 = counts.inserts.load(Ordering::Relaxed);
+        let updates0 = counts.updates.load(Ordering::Relaxed);
+        let removes0 = counts.removes.load(Ordering::Relaxed);
+        let clears0 = counts.clears.load(Ordering::Relaxed);
+
+        let _ = tree.commit();
+
+        assert_eq!(counts.inserts.load(Ordering::Relaxed), inserts0);
+        assert_eq!(counts.updates.load(Ordering::Relaxed), updates0);
+        assert_eq!(counts.removes.load(Ordering::Relaxed), removes0);
+        assert_eq!(counts.clears.load(Ordering::Relaxed), clears0);
+    }
+
+    #[test]
+    fn commit_skips_backend_update_when_clipped_bounds_unchanged() {
+        let counts = Arc::new(BackendCounts::default());
+        let backend = CountingBackend::new(FlatVec::<f64>::default(), counts.clone());
+        let mut tree: Tree<CountingBackend<FlatVec<f64>>> = Tree::with_backend(backend);
+
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+                local_clip: Some(RoundedRect::from_rect(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0)),
+                ..Default::default()
+            },
+        );
+        let child = tree.insert(
+            Some(root),
+            LocalNode {
+                // Large enough to fully cover the parent's clip even if we nudge it slightly.
+                local_bounds: Rect::new(-100.0, -100.0, 1000.0, 1000.0),
+                ..Default::default()
+            },
+        );
+        let _ = tree.commit();
+
+        let updates0 = counts.updates.load(Ordering::Relaxed);
+        tree.set_local_transform(child, Affine::translate(Vec2::new(0.25, 0.0)));
+        let _ = tree.commit();
+        assert_eq!(
+            counts.updates.load(Ordering::Relaxed),
+            updates0,
+            "world bounds are unchanged (fully clipped), so the spatial backend should not be updated"
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "Tree queries require calling `Tree::commit()`")]
+    fn hit_test_without_commit_panics_in_debug() {
+        let mut tree = Tree::new();
+        tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                ..Default::default()
+            },
+        );
+        let _ = tree.hit_test_point(Point::new(5.0, 5.0), QueryFilter::new());
     }
 
     #[test]
