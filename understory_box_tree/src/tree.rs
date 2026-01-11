@@ -936,6 +936,7 @@ mod tests {
     use alloc::vec;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use kurbo::Vec2;
+    use understory_index::Aabb2D;
 
     use super::*;
 
@@ -959,12 +960,12 @@ mod tests {
     }
 
     impl<B: Backend<f64>> Backend<f64> for CountingBackend<B> {
-        fn insert(&mut self, slot: usize, aabb: understory_index::Aabb2D<f64>) {
+        fn insert(&mut self, slot: usize, aabb: Aabb2D<f64>) {
             self.counts.inserts.fetch_add(1, Ordering::Relaxed);
             self.inner.insert(slot, aabb);
         }
 
-        fn update(&mut self, slot: usize, aabb: understory_index::Aabb2D<f64>) {
+        fn update(&mut self, slot: usize, aabb: Aabb2D<f64>) {
             self.counts.updates.fetch_add(1, Ordering::Relaxed);
             self.inner.update(slot, aabb);
         }
@@ -983,7 +984,7 @@ mod tests {
             self.inner.visit_point(x, y, f);
         }
 
-        fn visit_rect<F: FnMut(usize)>(&self, rect: understory_index::Aabb2D<f64>, f: F) {
+        fn visit_rect<F: FnMut(usize)>(&self, rect: Aabb2D<f64>, f: F) {
             self.inner.visit_rect(rect, f);
         }
     }
