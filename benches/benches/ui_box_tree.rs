@@ -500,6 +500,30 @@ fn bench_commit_one_transform<B: Backend<f64>>(
     );
 }
 
+fn bench_commit_one_bounds<B: Backend<f64>>(
+    g: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    backend: B,
+) {
+    let (mut tree, ids, _stats) = build_ui_box_tree(backend);
+    let id = ids[ids.len() / 2];
+    let b0 = Rect::new(0.0, 0.0, 1.0, 1.0);
+    let b1 = Rect::new(0.0, 0.0, 1.01, 1.0);
+    let mut toggle = false;
+
+    g.bench_with_input(
+        BenchmarkId::new("commit_one_bounds", name),
+        &name,
+        |b, _| {
+            b.iter(|| {
+                toggle = !toggle;
+                tree.set_local_bounds(id, if toggle { b0 } else { b1 });
+                black_box(tree.commit())
+            });
+        },
+    );
+}
+
 fn ui_box_tree(c: &mut Criterion) {
     // Keep these short: they rebuild a sizable tree.
     let mut g = c.benchmark_group("ui_box_tree");
@@ -539,12 +563,22 @@ fn ui_box_tree(c: &mut Criterion) {
         "flatvec",
         understory_index::backends::FlatVec::<f64>::default(),
     );
+    bench_commit_one_bounds(
+        &mut g,
+        "flatvec",
+        understory_index::backends::FlatVec::<f64>::default(),
+    );
     bench_commit_noop(
         &mut g,
         "grid_f64_100",
         understory_index::backends::GridF64::new(100.0),
     );
     bench_commit_one_transform(
+        &mut g,
+        "grid_f64_100",
+        understory_index::backends::GridF64::new(100.0),
+    );
+    bench_commit_one_bounds(
         &mut g,
         "grid_f64_100",
         understory_index::backends::GridF64::new(100.0),
@@ -555,6 +589,11 @@ fn ui_box_tree(c: &mut Criterion) {
         understory_index::backends::RTreeF64::<()>::default(),
     );
     bench_commit_one_transform(
+        &mut g,
+        "rtree_f64",
+        understory_index::backends::RTreeF64::<()>::default(),
+    );
+    bench_commit_one_bounds(
         &mut g,
         "rtree_f64",
         understory_index::backends::RTreeF64::<()>::default(),
@@ -565,6 +604,11 @@ fn ui_box_tree(c: &mut Criterion) {
         understory_index::backends::BvhF64::default(),
     );
     bench_commit_one_transform(
+        &mut g,
+        "bvh_f64",
+        understory_index::backends::BvhF64::default(),
+    );
+    bench_commit_one_bounds(
         &mut g,
         "bvh_f64",
         understory_index::backends::BvhF64::default(),
