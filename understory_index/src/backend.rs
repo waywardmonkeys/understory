@@ -23,6 +23,16 @@ pub trait Backend<T: Copy + PartialOrd + Debug> {
     /// Clear all spatial structures.
     fn clear(&mut self);
 
+    /// Insert many slots in a batch.
+    ///
+    /// Backends can override this to implement an efficient bulk-build path.
+    /// The default implementation calls [`Backend::insert`] in a loop.
+    fn bulk_load(&mut self, items: &[(usize, Aabb2D<T>)]) {
+        for &(slot, aabb) in items {
+            self.insert(slot, aabb);
+        }
+    }
+
     /// Visit slots whose AABB contains the point.
     fn visit_point<F: FnMut(usize)>(&self, x: T, y: T, f: F);
 

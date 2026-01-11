@@ -164,13 +164,14 @@ where
     /// Apply pending changes and compute batched damage. Also synchronizes backend state.
     pub fn commit(&mut self) -> Damage<T> {
         let mut dmg = Damage::default();
+        let mut added = Vec::new();
         for i in 0..self.entries.len() {
             let Some(entry) = self.entries[i].as_mut() else {
                 continue;
             };
             match entry.mark.take() {
                 Some(Mark::Added) => {
-                    self.backend.insert(i, entry.aabb);
+                    added.push((i, entry.aabb));
                     dmg.added.push(entry.aabb);
                 }
                 Some(Mark::Removed) => {
@@ -191,6 +192,9 @@ where
                 }
                 None => {}
             }
+        }
+        if !added.is_empty() {
+            self.backend.bulk_load(&added);
         }
         dmg
     }

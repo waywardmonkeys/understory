@@ -179,6 +179,123 @@ impl<T: Scalar> Bvh<T> {
         (l, r)
     }
 
+    fn split_sah_in_place(items: &mut [BvhItem<T>], max_leaf: usize) -> usize {
+        let n = items.len();
+        debug_assert!(n >= 4, "BVH split requires at least 4 items");
+        let min_children = (max_leaf / 2).max(2).min(n.saturating_sub(2));
+
+        let mut best_axis = 0_usize;
+        let mut best_k = min_children;
+        let mut best_cost: Option<crate::types::ScalarAcc<T>> = None;
+
+        for axis in 0..2 {
+            items.sort_by(|a, b| {
+                let ca = if axis == 0 {
+                    Scalar::mid(a.1.min_x, a.1.max_x)
+                } else {
+                    Scalar::mid(a.1.min_y, a.1.max_y)
+                };
+                let cb = if axis == 0 {
+                    Scalar::mid(b.1.min_x, b.1.max_x)
+                } else {
+                    Scalar::mid(b.1.min_y, b.1.max_y)
+                };
+                match ca.partial_cmp(&cb) {
+                    Some(ord) => ord,
+                    None => core::cmp::Ordering::Equal,
+                }
+            });
+
+            let mut prefix: Vec<Aabb2D<T>> = Vec::with_capacity(n);
+            for (i, (_, bb)) in items.iter().enumerate() {
+                if i == 0 {
+                    prefix.push(*bb);
+                } else {
+                    let prev = *prefix.last().unwrap();
+                    prefix.push(prev.union(*bb));
+                }
+            }
+
+            let mut suffix: Vec<Aabb2D<T>> = Vec::with_capacity(n);
+            for (i, (_, bb)) in items.iter().enumerate().rev() {
+                if i == n - 1 {
+                    suffix.push(*bb);
+                } else {
+                    let prev = *suffix.last().unwrap();
+                    suffix.push(prev.union(*bb));
+                }
+            }
+            suffix.reverse();
+
+            for k in min_children..=(n - min_children) {
+                let lb = prefix[k - 1];
+                let rb = suffix[k];
+                let cost = lb.area() * T::acc_from_usize(k) + rb.area() * T::acc_from_usize(n - k);
+                if best_cost.map(|bc| cost < bc).unwrap_or(true) {
+                    best_cost = Some(cost);
+                    best_axis = axis;
+                    best_k = k;
+                }
+            }
+        }
+
+        if best_axis != 1 {
+            items.sort_by(|a, b| {
+                let ca = if best_axis == 0 {
+                    Scalar::mid(a.1.min_x, a.1.max_x)
+                } else {
+                    Scalar::mid(a.1.min_y, a.1.max_y)
+                };
+                let cb = if best_axis == 0 {
+                    Scalar::mid(b.1.min_x, b.1.max_x)
+                } else {
+                    Scalar::mid(b.1.min_y, b.1.max_y)
+                };
+                match ca.partial_cmp(&cb) {
+                    Some(ord) => ord,
+                    None => core::cmp::Ordering::Equal,
+                }
+            });
+        }
+
+        best_k
+    }
+
+    fn build_node_bulk(&mut self, parent: Option<NodeIdx>, items: &mut [BvhItem<T>]) -> NodeIdx {
+        let idx = NodeIdx::new(self.arena.len());
+        self.arena.push(Node {
+            parent,
+            bbox: Aabb2D::new(T::zero(), T::zero(), T::zero(), T::zero()),
+            count: 0,
+            kind: Kind::Leaf(Vec::new()),
+        });
+
+        if items.len() <= self.max_leaf {
+            let bbox = Self::bbox_items(items);
+            let count = items.len();
+            let leaf_items = items.to_vec();
+            for &(slot, _) in &leaf_items {
+                self.slot_leaf[slot] = Some(idx);
+            }
+            self.arena[idx.get()].bbox = bbox;
+            self.arena[idx.get()].count = count;
+            self.arena[idx.get()].kind = Kind::Leaf(leaf_items);
+            return idx;
+        }
+
+        let split = Self::split_sah_in_place(items, self.max_leaf);
+        let (left_items, right_items) = items.split_at_mut(split);
+        let left = self.build_node_bulk(Some(idx), left_items);
+        let right = self.build_node_bulk(Some(idx), right_items);
+
+        let bbox = Self::bbox_children(&self.arena, left, right);
+        let count = self.arena[left.get()].count + self.arena[right.get()].count;
+        self.arena[idx.get()].bbox = bbox;
+        self.arena[idx.get()].count = count;
+        self.arena[idx.get()].kind = Kind::Internal { left, right };
+        idx
+    }
+
     fn insert_node(
         arena: &mut Vec<Node<T>>,
         slot_leaf: &mut Vec<Option<NodeIdx>>,
@@ -386,6 +503,36 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
         self.arena.clear();
         self.slots.clear();
         self.slot_leaf.clear();
+    }
+
+    fn bulk_load(&mut self, items: &[(usize, Aabb2D<T>)]) {
+        if items.is_empty() {
+            return;
+        }
+
+        // If we're not empty, fall back to incremental inserts to preserve existing entries.
+        if self.root.is_some() {
+            for &(slot, aabb) in items {
+                self.insert(slot, aabb);
+            }
+            return;
+        }
+
+        self.clear();
+        let max_slot = items.iter().map(|(s, _)| *s).max().unwrap_or(0);
+        self.slots.resize_with(max_slot + 1, || None);
+        self.slot_leaf.resize_with(max_slot + 1, || None);
+
+        let mut work: Vec<BvhItem<T>> = Vec::with_capacity(items.len());
+        for &(slot, aabb) in items {
+            self.slots[slot] = Some(aabb);
+            work.push((slot, aabb));
+        }
+
+        // Reserve ~2n nodes (binary tree with leaf fanout).
+        self.arena.reserve(work.len().saturating_mul(2));
+        let root = self.build_node_bulk(None, &mut work);
+        self.root = Some(root);
     }
 
     fn visit_point<F: FnMut(usize)>(&self, x: T, y: T, mut f: F) {
