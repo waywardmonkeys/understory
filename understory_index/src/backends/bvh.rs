@@ -423,22 +423,30 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                 }
                 Kind::Internal { left, right } => {
                     // Prefilter children before pushing them: avoids work in high-fanout trees.
-                    let lb = self.arena[left.get()].bbox;
-                    let rb = self.arena[right.get()].bbox;
-                    if rb.contains_point(x, y) {
-                        if !heap_stack.is_empty() || inline_len == inline.len() {
-                            heap_stack.push(*right);
-                        } else {
-                            inline[inline_len] = *right;
-                            inline_len += 1;
+                    //
+                    // Note: `bbox` is only meaningful when `count > 0`, so check counts first.
+                    let right_i = right.get();
+                    if self.arena[right_i].count > 0 {
+                        let rb = self.arena[right_i].bbox;
+                        if rb.contains_point(x, y) {
+                            if !heap_stack.is_empty() || inline_len == inline.len() {
+                                heap_stack.push(*right);
+                            } else {
+                                inline[inline_len] = *right;
+                                inline_len += 1;
+                            }
                         }
                     }
-                    if lb.contains_point(x, y) {
-                        if !heap_stack.is_empty() || inline_len == inline.len() {
-                            heap_stack.push(*left);
-                        } else {
-                            inline[inline_len] = *left;
-                            inline_len += 1;
+                    let left_i = left.get();
+                    if self.arena[left_i].count > 0 {
+                        let lb = self.arena[left_i].bbox;
+                        if lb.contains_point(x, y) {
+                            if !heap_stack.is_empty() || inline_len == inline.len() {
+                                heap_stack.push(*left);
+                            } else {
+                                inline[inline_len] = *left;
+                                inline_len += 1;
+                            }
                         }
                     }
                 }
@@ -481,22 +489,30 @@ impl<T: Scalar> Backend<T> for Bvh<T> {
                 }
                 Kind::Internal { left, right } => {
                     // Prefilter children before pushing them: avoids work in high-fanout trees.
-                    let lb = self.arena[left.get()].bbox;
-                    let rb = self.arena[right.get()].bbox;
-                    if rb.overlaps(&rect) {
-                        if !heap_stack.is_empty() || inline_len == inline.len() {
-                            heap_stack.push(*right);
-                        } else {
-                            inline[inline_len] = *right;
-                            inline_len += 1;
+                    //
+                    // Note: `bbox` is only meaningful when `count > 0`, so check counts first.
+                    let right_i = right.get();
+                    if self.arena[right_i].count > 0 {
+                        let rb = self.arena[right_i].bbox;
+                        if rb.overlaps(&rect) {
+                            if !heap_stack.is_empty() || inline_len == inline.len() {
+                                heap_stack.push(*right);
+                            } else {
+                                inline[inline_len] = *right;
+                                inline_len += 1;
+                            }
                         }
                     }
-                    if lb.overlaps(&rect) {
-                        if !heap_stack.is_empty() || inline_len == inline.len() {
-                            heap_stack.push(*left);
-                        } else {
-                            inline[inline_len] = *left;
-                            inline_len += 1;
+                    let left_i = left.get();
+                    if self.arena[left_i].count > 0 {
+                        let lb = self.arena[left_i].bbox;
+                        if lb.overlaps(&rect) {
+                            if !heap_stack.is_empty() || inline_len == inline.len() {
+                                heap_stack.push(*left);
+                            } else {
+                                inline[inline_len] = *left;
+                                inline_len += 1;
+                            }
                         }
                     }
                 }
