@@ -467,7 +467,11 @@ impl<B: Backend<f64>> Tree<B> {
         starts.sort_by_key(|id| (id.1, id.0));
         starts.dedup_by_key(|id| (id.1, id.0));
 
-        // Remove any start node that is already covered by a start ancestor.
+        // Remove any start node that is already covered by a start ancestor that will traverse
+        // into its descendants.
+        //
+        // We only traverse a subtree when an ancestor transform/clip changed. If an ancestor is
+        // dirty only for local layout/index, it will be updated but its children won't be visited.
         let mut top_level = Vec::new();
         for &id in &starts {
             let mut covered = false;
@@ -477,8 +481,11 @@ impl<B: Backend<f64>> Tree<B> {
                     .binary_search_by_key(&(p.1, p.0), |x| (x.1, x.0))
                     .is_ok()
                 {
-                    covered = true;
-                    break;
+                    let ancestor_dirty = self.node(p).dirty;
+                    if ancestor_dirty.transform || ancestor_dirty.clip {
+                        covered = true;
+                        break;
+                    }
                 }
                 current = self.node(p).parent;
             }
@@ -1076,6 +1083,43 @@ mod tests {
             updates0,
             "world bounds are unchanged (fully clipped), so the spatial backend should not be updated"
         );
+    }
+
+    #[test]
+    fn commit_does_not_drop_dirty_descendant_when_ancestor_layout_only() {
+        let mut tree = Tree::new();
+        let root = tree.insert(
+            None,
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+                ..Default::default()
+            },
+        );
+        let parent = tree.insert(
+            Some(root),
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+                ..Default::default()
+            },
+        );
+        let child = tree.insert(
+            Some(parent),
+            LocalNode {
+                local_bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+                ..Default::default()
+            },
+        );
+        let _ = tree.commit();
+
+        // Mutate the ancestor in a way that *does not* require visiting descendants, and also
+        // mutate a descendant's transform. A commit must update the descendant even if the
+        // ancestor is also dirty.
+        tree.set_local_bounds(parent, Rect::new(0.0, 0.0, 200.0, 200.0));
+        tree.set_local_transform(child, Affine::translate(Vec2::new(50.0, 0.0)));
+        let _ = tree.commit();
+
+        let child_bounds = tree.world_bounds(child).unwrap();
+        assert_eq!(child_bounds, Rect::new(50.0, 0.0, 60.0, 10.0));
     }
 
     #[test]
