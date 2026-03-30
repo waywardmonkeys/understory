@@ -549,6 +549,7 @@ dependencies = [
  "understory_event_state",
  "understory_focus",
  "understory_index",
+ "understory_pager",
  "understory_precise_hit",
  "understory_responder",
 ]
@@ -569,6 +570,10 @@ dependencies = [
  "hashbrown",
  "smallvec",
 ]
+
+[[package]]
+name = "understory_pager"
+version = "0.1.0"
 
 [[package]]
 name = "understory_precise_hit"

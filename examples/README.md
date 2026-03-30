@@ -34,6 +34,14 @@ These examples form a short, progressive walkthrough from routing basics to inte
   - Use `intersect_rect` to compute a simple visible window (like a virtualized list) using `understory_box_tree`.
   - Run: `cargo run -p understory_examples --example box_tree_visible_list`
 
+- pager_search
+  - Drive prev/next controls and numbered page buttons over a dense search-results pager.
+  - Run: `cargo run -p understory_examples --example pager_search`
+
+- pager_validation
+  - Navigate a derived sequence of visible validation issues using stable domain IDs rather than filtered positions.
+  - Run: `cargo run -p understory_examples --example pager_validation`
+
 Notes
 - Examples live in a separate crate (`understory_examples`) so that published crates stay free of example-only dependencies.
 - Output is formatted with section headers to make sequences easy to follow.
