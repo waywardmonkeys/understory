@@ -41,6 +41,21 @@ pub enum GuideHit {
     EndHandle,
 }
 
+/// Semantic hit targets for an angle guide.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AngleGuideHit {
+    /// The shared vertex handle.
+    VertexHandle,
+    /// The start-ray endpoint handle.
+    StartHandle,
+    /// The end-ray endpoint handle.
+    EndHandle,
+    /// The finite body of the start ray.
+    StartRay,
+    /// The finite body of the end ray.
+    EndRay,
+}
+
 /// A headless 2D line guide pose.
 ///
 /// The guide stores only a center point, direction, and length. Rendering,
@@ -289,9 +304,215 @@ impl AxisGuide2D {
     }
 }
 
+/// A headless 2D angle guide with a shared vertex and two finite rays.
+///
+/// The guide stores only geometry. Rendering, snapping policy, and interaction
+/// state remain the responsibility of a higher layer.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AngleGuide2D {
+    vertex: Point,
+    start_angle_rad: f64,
+    end_angle_rad: f64,
+    start_ray_length: f64,
+    end_ray_length: f64,
+}
+
+impl AngleGuide2D {
+    /// Creates a new angle guide.
+    ///
+    /// Negative ray lengths are treated as zero.
+    #[must_use]
+    pub fn new(
+        vertex: Point,
+        start_angle_rad: f64,
+        end_angle_rad: f64,
+        start_ray_length: f64,
+        end_ray_length: f64,
+    ) -> Self {
+        Self {
+            vertex,
+            start_angle_rad: normalize_angle(start_angle_rad),
+            end_angle_rad: normalize_angle(end_angle_rad),
+            start_ray_length: start_ray_length.max(0.0),
+            end_ray_length: end_ray_length.max(0.0),
+        }
+    }
+
+    /// Creates an angle guide from a shared vertex and two endpoint handles.
+    ///
+    /// Returns `None` when either ray would have zero length.
+    #[must_use]
+    pub fn from_points(vertex: Point, start_point: Point, end_point: Point) -> Option<Self> {
+        let start_delta = start_point - vertex;
+        let end_delta = end_point - vertex;
+        let start_length = start_delta.hypot();
+        let end_length = end_delta.hypot();
+        if start_length <= 0.0 || end_length <= 0.0 {
+            return None;
+        }
+        Some(Self::new(
+            vertex,
+            start_delta.atan2(),
+            end_delta.atan2(),
+            start_length,
+            end_length,
+        ))
+    }
+
+    /// Returns the shared vertex.
+    #[must_use]
+    pub fn vertex(self) -> Point {
+        self.vertex
+    }
+
+    /// Returns the start-ray angle in radians.
+    #[must_use]
+    pub fn start_angle_rad(self) -> f64 {
+        self.start_angle_rad
+    }
+
+    /// Returns the end-ray angle in radians.
+    #[must_use]
+    pub fn end_angle_rad(self) -> f64 {
+        self.end_angle_rad
+    }
+
+    /// Returns the finite start-ray length in view units.
+    #[must_use]
+    pub fn start_ray_length(self) -> f64 {
+        self.start_ray_length
+    }
+
+    /// Returns the finite end-ray length in view units.
+    #[must_use]
+    pub fn end_ray_length(self) -> f64 {
+        self.end_ray_length
+    }
+
+    /// Returns the start-ray unit vector.
+    #[must_use]
+    pub fn start_direction(self) -> Vec2 {
+        vec_from_angle(self.start_angle_rad)
+    }
+
+    /// Returns the end-ray unit vector.
+    #[must_use]
+    pub fn end_direction(self) -> Vec2 {
+        vec_from_angle(self.end_angle_rad)
+    }
+
+    /// Returns the start-ray endpoint handle.
+    #[must_use]
+    pub fn start_point(self) -> Point {
+        self.vertex + self.start_direction() * self.start_ray_length
+    }
+
+    /// Returns the end-ray endpoint handle.
+    #[must_use]
+    pub fn end_point(self) -> Point {
+        self.vertex + self.end_direction() * self.end_ray_length
+    }
+
+    /// Returns the signed shortest sweep from start ray to end ray.
+    ///
+    /// The result is normalized into `[-PI, PI]`.
+    #[must_use]
+    pub fn minor_sweep_rad(self) -> f64 {
+        shortest_angle_delta(self.start_angle_rad, self.end_angle_rad)
+    }
+
+    /// Returns the absolute size of the minor angle in radians.
+    #[must_use]
+    pub fn minor_angle_rad(self) -> f64 {
+        self.minor_sweep_rad().abs()
+    }
+
+    /// Returns the bisector angle of the minor angle.
+    #[must_use]
+    pub fn bisector_angle_rad(self) -> f64 {
+        normalize_angle(self.start_angle_rad + self.minor_sweep_rad() * 0.5)
+    }
+
+    /// Returns a point along the minor arc at the given radius.
+    ///
+    /// `fraction` is clamped into `[0, 1]`.
+    #[must_use]
+    pub fn point_on_minor_arc(self, fraction: f64, radius: f64) -> Point {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let angle = self.start_angle_rad + self.minor_sweep_rad() * fraction;
+        self.vertex + vec_from_angle(angle) * radius.max(0.0)
+    }
+
+    /// Returns a point on the angle bisector at the given distance from the vertex.
+    #[must_use]
+    pub fn bisector_point(self, distance: f64) -> Point {
+        self.vertex + vec_from_angle(self.bisector_angle_rad()) * distance.max(0.0)
+    }
+
+    /// Hit-tests the angle guide.
+    ///
+    /// Handles are prioritized over ray bodies.
+    #[must_use]
+    pub fn hit_test(
+        self,
+        point: Point,
+        ray_tolerance: f64,
+        handle_tolerance: f64,
+    ) -> Option<AngleGuideHit> {
+        if point.distance(self.vertex) <= handle_tolerance {
+            return Some(AngleGuideHit::VertexHandle);
+        }
+        if point.distance(self.start_point()) <= handle_tolerance {
+            return Some(AngleGuideHit::StartHandle);
+        }
+        if point.distance(self.end_point()) <= handle_tolerance {
+            return Some(AngleGuideHit::EndHandle);
+        }
+
+        let start_distance = point_to_segment_distance(self.vertex, self.start_point(), point);
+        if start_distance <= ray_tolerance {
+            return Some(AngleGuideHit::StartRay);
+        }
+        let end_distance = point_to_segment_distance(self.vertex, self.end_point(), point);
+        (end_distance <= ray_tolerance).then_some(AngleGuideHit::EndRay)
+    }
+}
+
+fn vec_from_angle(angle_rad: f64) -> Vec2 {
+    Vec2::new(angle_rad.cos(), angle_rad.sin())
+}
+
+fn normalize_angle(angle_rad: f64) -> f64 {
+    let tau = PI * 2.0;
+    let mut angle = angle_rad % tau;
+    if angle <= -PI {
+        angle += tau;
+    } else if angle > PI {
+        angle -= tau;
+    }
+    angle
+}
+
+fn shortest_angle_delta(start_rad: f64, end_rad: f64) -> f64 {
+    normalize_angle(end_rad - start_rad)
+}
+
+fn point_to_segment_distance(start: Point, end: Point, point: Point) -> f64 {
+    let delta = end - start;
+    let length_sq = delta.hypot2();
+    if length_sq <= 0.0 {
+        return point.distance(start);
+    }
+    let t = ((point - start).dot(delta) / length_sq).clamp(0.0, 1.0);
+    let nearest = start.lerp(end, t);
+    point.distance(nearest)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AxisGuide2D, AxisGuideOptions, GuideHit, LineGuide2D};
+    use super::{
+        AngleGuide2D, AngleGuideHit, AxisGuide2D, AxisGuideOptions, GuideHit, LineGuide2D,
+    };
     use kurbo::Point;
     use understory_axis::{
         AxisMajorStepLadder, AxisMapping1D, AxisRuler1D, AxisRulerOptions, AxisScale1D,
@@ -347,5 +568,38 @@ mod tests {
         assert!((first_major.baseline_point.y - 100.0).abs() < 1e-6);
         assert!(first_major.tip_point.y > first_major.baseline_point.y);
         assert!(first_major.label_anchor.y > first_major.tip_point.y);
+    }
+
+    #[test]
+    fn angle_guide_reports_minor_sweep_and_bisector() {
+        let guide = AngleGuide2D::new(Point::ZERO, 0.0, core::f64::consts::FRAC_PI_2, 40.0, 40.0);
+        assert!((guide.minor_sweep_rad() - core::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((guide.minor_angle_rad() - core::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((guide.bisector_angle_rad() - core::f64::consts::FRAC_PI_4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_guide_hit_test_prefers_handles_then_rays() {
+        let guide = AngleGuide2D::new(Point::ZERO, 0.0, core::f64::consts::FRAC_PI_2, 40.0, 40.0);
+        assert_eq!(
+            guide.hit_test(Point::ZERO, 5.0, 7.0),
+            Some(AngleGuideHit::VertexHandle)
+        );
+        assert_eq!(
+            guide.hit_test(guide.start_point(), 5.0, 7.0),
+            Some(AngleGuideHit::StartHandle)
+        );
+        assert_eq!(
+            guide.hit_test(guide.end_point(), 5.0, 7.0),
+            Some(AngleGuideHit::EndHandle)
+        );
+        assert_eq!(
+            guide.hit_test(Point::new(18.0, 2.0), 5.0, 7.0),
+            Some(AngleGuideHit::StartRay)
+        );
+        assert_eq!(
+            guide.hit_test(Point::new(2.0, 18.0), 5.0, 7.0),
+            Some(AngleGuideHit::EndRay)
+        );
     }
 }

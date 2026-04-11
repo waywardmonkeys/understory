@@ -5,6 +5,7 @@
 It owns:
 
 - line-guide pose and projection math
+- angle-guide pose and sweep geometry
 - semantic hit targets for guide body and handles
 - lifting `understory_axis::AxisRuler1D` marks onto a 2D guide
 
@@ -20,3 +21,9 @@ Typical usage:
 1. derive an `AxisRuler1D` from `understory_axis`
 2. place it on screen with a `LineGuide2D`
 3. render the resulting `AxisGuide2D` marks in app code
+
+Or, for non-axis geometry:
+
+1. build an `AngleGuide2D`
+2. query handle positions, minor sweep, bisector, and hits
+3. render the resulting guide and labels in app code
