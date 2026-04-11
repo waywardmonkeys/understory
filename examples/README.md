@@ -34,6 +34,10 @@ These examples form a short, progressive walkthrough from routing basics to inte
   - Use `intersect_rect` to compute a simple visible window (like a virtualized list) using `understory_box_tree`.
   - Run: `cargo run -p understory_examples --example box_tree_visible_list`
 
+- axis_ruler_demo
+  - Render a free-floating ruler from `understory_axis` scalar marks and `understory_guide` 2D geometry, then move, rotate, stretch, and domain-pan it in 2D. Includes linear/log mode switching to pressure the axis mapping split outside chart layouts.
+  - Run: `cargo run -p understory_examples --example axis_ruler_demo`
+  - Controls: left-drag the baseline to move, left-drag the endpoint handles to rotate/stretch, right-drag the baseline to pan the domain, mouse wheel over the baseline to zoom the domain, `L` to toggle linear/log, `Space` to fit bounds, `R` to reset
 Notes
 - Examples live in a separate crate (`understory_examples`) so that published crates stay free of example-only dependencies.
 - Output is formatted with section headers to make sequences easy to follow.

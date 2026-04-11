@@ -12,7 +12,15 @@ understory_responder = { path = "../understory_responder", features = [
 ] }
 kurbo = { workspace = true, default-features = true }
 understory_box_tree = { path = "../understory_box_tree" }
+understory_axis = { path = "../understory_axis" }
 understory_focus = { path = "../understory_focus" }
+understory_guide = { path = "../understory_guide" }
 understory_index = { path = "../understory_index" }
 understory_precise_hit = { path = "../understory_precise_hit" }
 understory_event_state = { path = "../understory_event_state" }
+imaging = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b", features = ["std"] }
+imaging_vello_hybrid = { git = "https://github.com/forest-rs/imaging.git", rev = "0eea0499d2666195103b9837ac4c3ee474176a5b" }
+parley = { version = "0.8.0", default-features = true }
+peniko = { version = "0.6", default-features = true }
+pollster = "0.4.0"
+winit = "0.30.10"
