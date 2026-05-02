@@ -16,14 +16,16 @@ invalidation.workspace = true
 kurbo.workspace = true
 parley.workspace = true
 peniko.workspace = true
+ui-events.workspace = true
 understory_box_tree = { path = "../understory_box_tree" }
+understory_event_state = { path = "../understory_event_state", default-features = false, features = ["click"] }
 understory_property = { path = "../understory_property" }
 understory_style = { path = "../understory_style" }
 
 [features]
 default = ["libm"]
-libm = ["imaging/libm", "kurbo/libm", "parley/libm", "peniko/libm"]
-std = ["imaging/std", "kurbo/std", "parley/system", "peniko/std"]
+libm = ["imaging/libm", "kurbo/libm", "parley/libm", "peniko/libm", "ui-events/libm", "understory_event_state/libm"]
+std = ["imaging/std", "kurbo/std", "parley/system", "peniko/std", "ui-events/std", "understory_event_state/std"]
 
 [lints]
 workspace = true

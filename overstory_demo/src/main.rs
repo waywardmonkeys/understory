@@ -18,14 +18,13 @@ use imaging_vello_hybrid::wgpu::{
     TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
     VertexState,
 };
-use kurbo::{Point, Size};
+use kurbo::Size;
 use overstory::{
     BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART, CHECKED,
-    CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CORNER_RADIUS_PROPERTY, ControlTemplate, ElementId,
+    CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CORNER_RADIUS_PROPERTY, ControlTemplate,
     FOREGROUND_PROPERTY, HOVERED, PADDING_PROPERTY, PRESSED, TemplateBinding, TemplateNode, Ui,
 };
 use peniko::{Brush, Color as PaintColor};
-use ui_events::pointer::{PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
 use understory_style::{StyleBuilder, StyleCascadeBuilder, StyleOrigin};
 use winit::application::ApplicationHandler;
@@ -88,8 +87,6 @@ struct RunState {
     blit: BlitState,
     event_reducer: WindowEventReducer,
     ui: Ui,
-    hovered: Option<ElementId>,
-    pressed: Option<ElementId>,
 }
 
 #[derive(Debug)]
@@ -170,8 +167,6 @@ impl ApplicationHandler for App {
             blit,
             event_reducer: WindowEventReducer::default(),
             ui,
-            hovered: None,
-            pressed: None,
         };
         state.window.request_redraw();
         self.state = Some(state);
@@ -224,58 +219,7 @@ impl RunState {
             return;
         };
 
-        match event {
-            PointerEvent::Move(PointerUpdate { current, .. }) => {
-                self.set_hovered_at(current.logical_point());
-            }
-            PointerEvent::Down(PointerButtonEvent { button, state, .. }) => {
-                if button == Some(PointerButton::Primary) {
-                    self.set_hovered_at(state.logical_point());
-                    if let Some(hovered) = self.hovered {
-                        self.pressed = Some(hovered);
-                        self.ui.set_pressed(hovered, true);
-                        self.window.request_redraw();
-                    }
-                }
-            }
-            PointerEvent::Up(PointerButtonEvent { button, state, .. }) => {
-                if button == Some(PointerButton::Primary) {
-                    if let Some(pressed) = self.pressed.take() {
-                        self.ui.set_pressed(pressed, false);
-                        if self.hovered == Some(pressed) && self.ui.activate(pressed) {
-                            self.window.request_redraw();
-                        }
-                    }
-                    self.set_hovered_at(state.logical_point());
-                    self.window.request_redraw();
-                }
-            }
-            PointerEvent::Leave(_) | PointerEvent::Cancel(_) => {
-                if let Some(hovered) = self.hovered.take() {
-                    self.ui.set_hovered(hovered, false);
-                }
-                if let Some(pressed) = self.pressed.take() {
-                    self.ui.set_pressed(pressed, false);
-                }
-                self.window.request_redraw();
-            }
-            PointerEvent::Enter(_) | PointerEvent::Scroll(_) | PointerEvent::Gesture(_) => {}
-        }
-    }
-
-    fn set_hovered_at(&mut self, point: Point) {
-        let size = self.viewport_size();
-        let hovered = self.ui.hit_test(size, point);
-        if self.hovered != hovered {
-            if let Some(previous) = self.hovered {
-                self.ui.set_hovered(previous, false);
-            }
-            self.hovered = hovered;
-            if let Some(current) = hovered {
-                self.ui.set_hovered(current, true);
-            } else if let Some(pressed) = self.pressed.take() {
-                self.ui.set_pressed(pressed, false);
-            }
+        if self.ui.pointer_event(self.viewport_size(), &event) {
             self.window.request_redraw();
         }
     }

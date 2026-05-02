@@ -1728,7 +1728,9 @@ dependencies = [
  "kurbo",
  "parley",
  "peniko",
+ "ui-events",
  "understory_box_tree",
+ "understory_event_state",
  "understory_property",
  "understory_style",
 ]
@@ -1742,7 +1744,6 @@ dependencies = [
  "overstory",
  "peniko",
  "pollster",
- "ui-events",
  "ui-events-winit",
  "understory_style",
  "winit",

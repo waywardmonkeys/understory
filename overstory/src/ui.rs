@@ -7,10 +7,17 @@ use alloc::{vec, vec::Vec};
 
 use imaging::record;
 use invalidation::{ChannelSet, EagerPolicy, InvalidationTracker};
-use kurbo::{Insets, Rect, Size};
+use kurbo::{Insets, Point, Rect, Size};
 use peniko::Brush;
+use ui_events::pointer::{
+    PointerButton, PointerButtonEvent, PointerEvent, PointerInfo, PointerUpdate,
+};
 use understory_box_tree::{
     LocalNode, NodeFlags, NodeId as BoxNodeId, QueryFilter, Tree as BoxTree,
+};
+use understory_event_state::{
+    click::{ClickResult, ClickState},
+    hover::{HoverEvent, HoverState},
 };
 use understory_property::{DependencyObject, DependencyObjectExt, Property, PropertyRegistry};
 use understory_style::{
@@ -39,6 +46,9 @@ pub struct Ui {
     theme: Theme,
     invalidation: InvalidationTracker<ElementId>,
     text: TextSystem,
+    hover: HoverState<ElementId>,
+    clicks: ClickState<ElementId>,
+    pressed: Option<ElementId>,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
     box_tree: BoxTree,
@@ -52,6 +62,12 @@ pub struct Ui {
 struct BoxTarget {
     box_node: BoxNodeId,
     element: ElementId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HitTarget {
+    element: ElementId,
+    path: Vec<ElementId>,
 }
 
 pub(crate) struct TemplateValueResolver<'a> {
@@ -256,6 +272,9 @@ impl Ui {
             theme,
             invalidation,
             text: TextSystem::new(),
+            hover: HoverState::new(),
+            clicks: ClickState::new(),
+            pressed: None,
             presentation: PresentationTree::new(),
             presentation_viewport: None,
             box_tree: BoxTree::new(),
@@ -393,15 +412,58 @@ impl Ui {
         changed
     }
 
+    /// Returns the currently hovered element.
+    #[must_use]
+    pub fn hovered(&self) -> Option<ElementId> {
+        self.hover.current_path().last().copied()
+    }
+
+    /// Returns the currently pressed element.
+    #[must_use]
+    pub const fn pressed(&self) -> Option<ElementId> {
+        self.pressed
+    }
+
+    /// Applies one `ui-events` pointer event to retained UI interaction state.
+    ///
+    /// Returns `true` when the event changed retained state or activated a widget.
+    pub fn pointer_event(&mut self, viewport: Size, event: &PointerEvent) -> bool {
+        if !event.is_primary_pointer() {
+            return false;
+        }
+
+        match event {
+            PointerEvent::Move(PointerUpdate {
+                pointer, current, ..
+            }) => self.pointer_move(viewport, current.logical_point(), *pointer),
+            PointerEvent::Down(PointerButtonEvent {
+                button,
+                pointer,
+                state,
+            }) if *button == Some(PointerButton::Primary) => {
+                self.pointer_down(viewport, state.logical_point(), state.time, *pointer)
+            }
+            PointerEvent::Up(PointerButtonEvent {
+                button,
+                pointer,
+                state,
+            }) if *button == Some(PointerButton::Primary) => {
+                self.pointer_up(viewport, state.logical_point(), state.time, *pointer)
+            }
+            PointerEvent::Leave(pointer) | PointerEvent::Cancel(pointer) => {
+                self.pointer_cancel(*pointer)
+            }
+            PointerEvent::Down(_)
+            | PointerEvent::Up(_)
+            | PointerEvent::Enter(_)
+            | PointerEvent::Scroll(_)
+            | PointerEvent::Gesture(_) => false,
+        }
+    }
+
     /// Returns the topmost hit-testable element at `point`, rebuilding presentation if needed.
-    pub fn hit_test(&mut self, viewport: Size, point: kurbo::Point) -> Option<ElementId> {
-        self.presentation(viewport);
-        let hit = self
-            .box_tree
-            .hit_test_point(point, QueryFilter::new().visible().pickable())?;
-        self.box_targets
-            .iter()
-            .find(|target| target.box_node == hit.node)
+    pub fn hit_test(&mut self, viewport: Size, point: Point) -> Option<ElementId> {
+        self.hit_target(viewport, point)
             .map(|target| target.element)
     }
 
@@ -469,15 +531,23 @@ impl Ui {
 
     /// Sets hover state for an element.
     pub fn set_hovered(&mut self, id: ElementId, hovered: bool) {
-        if self.element_mut(id).state.set_hovered(hovered) {
-            self.restyle_or_mark_style(id);
+        if hovered {
+            self.apply_hover_path(&[id]);
+        } else if self.hovered() == Some(id) {
+            self.clear_hover();
+        } else {
+            self.set_hovered_state(id, false);
         }
     }
 
     /// Sets pressed state for an element.
     pub fn set_pressed(&mut self, id: ElementId, pressed: bool) {
-        if self.element_mut(id).state.set_pressed(pressed) {
-            self.restyle_or_mark_style(id);
+        if pressed {
+            self.set_pressed_element(Some(id));
+        } else if self.pressed == Some(id) {
+            self.set_pressed_element(None);
+        } else {
+            self.set_pressed_state(id, false);
         }
     }
 
@@ -1035,6 +1105,160 @@ impl Ui {
         self.state(element).is_some_and(ElementState::enabled) && self.widget_hit_testable(element)
     }
 
+    fn pointer_move(&mut self, viewport: Size, point: Point, pointer: PointerInfo) -> bool {
+        let target = self.hit_target(viewport, point);
+        let mut changed = self.apply_hover_target(target.as_ref());
+        self.clicks.on_move(pointer_id(pointer), point);
+        if target.is_none() {
+            self.clicks.cancel(pointer_id(pointer));
+            changed |= self.set_pressed_element(None);
+        }
+        changed
+    }
+
+    fn pointer_down(
+        &mut self,
+        viewport: Size,
+        point: Point,
+        timestamp: u64,
+        pointer: PointerInfo,
+    ) -> bool {
+        let target = self.hit_target(viewport, point);
+        let mut changed = self.apply_hover_target(target.as_ref());
+        if let Some(target) = target {
+            self.clicks.on_down(
+                pointer_id(pointer),
+                Some(primary_button()),
+                target.element,
+                point,
+                timestamp_ms(timestamp),
+            );
+            changed |= self.set_pressed_element(Some(target.element));
+        } else {
+            self.clicks.cancel(pointer_id(pointer));
+            changed |= self.set_pressed_element(None);
+        }
+        changed
+    }
+
+    fn pointer_up(
+        &mut self,
+        viewport: Size,
+        point: Point,
+        timestamp: u64,
+        pointer: PointerInfo,
+    ) -> bool {
+        let target = self.hit_target(viewport, point);
+        let mut changed = self.apply_hover_target(target.as_ref());
+        let click = if let Some(target) = target {
+            self.clicks.on_up(
+                pointer_id(pointer),
+                Some(primary_button()),
+                &target.element,
+                point,
+                timestamp_ms(timestamp),
+            )
+        } else {
+            self.clicks.cancel(pointer_id(pointer));
+            ClickResult::Suppressed(self.pressed)
+        };
+        changed |= self.set_pressed_element(None);
+        if let ClickResult::Click(id) = click {
+            changed |= self.activate(id);
+        }
+        changed
+    }
+
+    fn pointer_cancel(&mut self, pointer: PointerInfo) -> bool {
+        self.clicks.cancel(pointer_id(pointer));
+        let mut changed = self.clear_hover();
+        changed |= self.set_pressed_element(None);
+        changed
+    }
+
+    fn apply_hover_target(&mut self, target: Option<&HitTarget>) -> bool {
+        if let Some(target) = target {
+            let path = target.path.clone();
+            self.apply_hover_path(&path)
+        } else {
+            self.clear_hover()
+        }
+    }
+
+    fn apply_hover_path(&mut self, path: &[ElementId]) -> bool {
+        let events = self.hover.update_path(path);
+        self.apply_hover_events(events)
+    }
+
+    fn clear_hover(&mut self) -> bool {
+        let events = self.hover.clear();
+        self.apply_hover_events(events)
+    }
+
+    fn apply_hover_events(&mut self, events: Vec<HoverEvent<ElementId>>) -> bool {
+        let changed = !events.is_empty();
+        for event in events {
+            match event {
+                HoverEvent::Enter(id) => self.set_hovered_state(id, true),
+                HoverEvent::Leave(id) => self.set_hovered_state(id, false),
+            }
+        }
+        changed
+    }
+
+    fn hit_target(&mut self, viewport: Size, point: Point) -> Option<HitTarget> {
+        self.presentation(viewport);
+        let hit = self
+            .box_tree
+            .hit_test_point(point, QueryFilter::new().visible().pickable())?;
+        let element = self.element_for_box_node(hit.node)?;
+        let mut path = Vec::new();
+        for box_node in hit.path {
+            if let Some(element) = self.element_for_box_node(box_node)
+                && path.last() != Some(&element)
+            {
+                path.push(element);
+            }
+        }
+        if path.last() != Some(&element) {
+            path.push(element);
+        }
+        Some(HitTarget { element, path })
+    }
+
+    fn element_for_box_node(&self, box_node: BoxNodeId) -> Option<ElementId> {
+        self.box_targets
+            .iter()
+            .find(|target| target.box_node == box_node)
+            .map(|target| target.element)
+    }
+
+    fn set_pressed_element(&mut self, pressed: Option<ElementId>) -> bool {
+        if self.pressed == pressed {
+            return false;
+        }
+        if let Some(previous) = self.pressed {
+            self.set_pressed_state(previous, false);
+        }
+        self.pressed = pressed;
+        if let Some(current) = pressed {
+            self.set_pressed_state(current, true);
+        }
+        true
+    }
+
+    fn set_hovered_state(&mut self, id: ElementId, hovered: bool) {
+        if self.element_mut(id).state.set_hovered(hovered) {
+            self.restyle_or_mark_style(id);
+        }
+    }
+
+    fn set_pressed_state(&mut self, id: ElementId, pressed: bool) {
+        if self.element_mut(id).state.set_pressed(pressed) {
+            self.restyle_or_mark_style(id);
+        }
+    }
+
     fn selector_pseudos(
         &self,
         element: &Element,
@@ -1051,9 +1275,24 @@ impl Ui {
     }
 }
 
+fn pointer_id(pointer: PointerInfo) -> Option<understory_event_state::click::PointerId> {
+    pointer
+        .pointer_id
+        .map(ui_events::pointer::PointerId::get_inner)
+}
+
+fn primary_button() -> understory_event_state::click::Button {
+    1
+}
+
+fn timestamp_ms(timestamp_ns: u64) -> u64 {
+    timestamp_ns / 1_000_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui_events::pointer::{PointerId, PointerInfo, PointerState, PointerType};
 
     #[test]
     fn semantic_marks_cascade_to_visual() {
@@ -1157,7 +1396,7 @@ mod tests {
         );
         assert!(has_badge_node);
         assert_eq!(
-            ui.hit_test(Size::new(100.0, 100.0), kurbo::Point::new(1.0, 1.0)),
+            ui.hit_test(Size::new(100.0, 100.0), Point::new(1.0, 1.0)),
             None
         );
     }
@@ -1272,7 +1511,7 @@ mod tests {
             .expect("toggle should emit a thumb");
 
         assert_eq!(
-            ui.hit_test(Size::new(240.0, 80.0), kurbo::Point::new(2.0, 2.0)),
+            ui.hit_test(Size::new(240.0, 80.0), Point::new(2.0, 2.0)),
             Some(id)
         );
         assert!(ui.activate(id));
@@ -1287,6 +1526,79 @@ mod tests {
             .map(|node| node.bounds.x0)
             .expect("toggle should emit a thumb after activation");
         assert!(updated_thumb_x > initial_thumb_x);
+    }
+
+    #[test]
+    fn pointer_interaction_retains_hover_press_and_activates() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(240.0, 80.0);
+        let id = ui.add_toggle(ui.root(), "Enable sync");
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::TOGGLE_PART)
+            .map(|node| node.bounds)
+            .expect("toggle should be presented");
+        let point = bounds.center();
+
+        assert!(ui.pointer_event(viewport, &pointer_move(point)));
+        assert_eq!(ui.hovered(), Some(id));
+        assert!(ui.state(id).is_some_and(ElementState::hovered));
+
+        assert!(ui.pointer_event(viewport, &pointer_down(point)));
+        assert_eq!(ui.pressed(), Some(id));
+        assert!(ui.state(id).is_some_and(ElementState::pressed));
+
+        assert!(ui.pointer_event(viewport, &pointer_up(point)));
+        assert_eq!(ui.pressed(), None);
+        assert!(ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
+        assert!(!ui.state(id).is_some_and(ElementState::pressed));
+
+        assert!(ui.pointer_event(viewport, &PointerEvent::Leave(primary_pointer())));
+        assert_eq!(ui.hovered(), None);
+        assert!(!ui.state(id).is_some_and(ElementState::hovered));
+    }
+
+    fn primary_pointer() -> PointerInfo {
+        PointerInfo {
+            pointer_id: Some(PointerId::PRIMARY),
+            persistent_device_id: None,
+            pointer_type: PointerType::Mouse,
+        }
+    }
+
+    fn pointer_state(point: Point) -> PointerState {
+        let mut state = PointerState::default();
+        state.position.x = point.x;
+        state.position.y = point.y;
+        state.scale_factor = 1.0;
+        state
+    }
+
+    fn pointer_move(point: Point) -> PointerEvent {
+        PointerEvent::Move(PointerUpdate {
+            pointer: primary_pointer(),
+            current: pointer_state(point),
+            coalesced: Vec::new(),
+            predicted: Vec::new(),
+        })
+    }
+
+    fn pointer_down(point: Point) -> PointerEvent {
+        PointerEvent::Down(PointerButtonEvent {
+            button: Some(PointerButton::Primary),
+            pointer: primary_pointer(),
+            state: pointer_state(point),
+        })
+    }
+
+    fn pointer_up(point: Point) -> PointerEvent {
+        PointerEvent::Up(PointerButtonEvent {
+            button: Some(PointerButton::Primary),
+            pointer: primary_pointer(),
+            state: pointer_state(point),
+        })
     }
 
     #[test]
