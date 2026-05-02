@@ -54,6 +54,7 @@ pub struct Ui {
     hover: HoverState<ElementId>,
     clicks: ClickState<ElementId>,
     pressed: Option<ElementId>,
+    responder: ResponderState,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
     box_tree: BoxTree,
@@ -76,11 +77,41 @@ struct HitTarget {
 }
 
 type ResponderDispatch = Dispatch<ElementId, ElementId, ()>;
+type ElementRouter = Router<ElementId, ElementWidgetLookup>;
 
 #[derive(Clone, Debug, Default)]
 struct PointerRoute {
     target: Option<ElementId>,
     dispatches: Vec<ResponderDispatch>,
+}
+
+#[derive(Debug)]
+struct ResponderState {
+    pointer_capture: Option<ElementId>,
+    router: ElementRouter,
+}
+
+impl ResponderState {
+    fn new() -> Self {
+        Self {
+            pointer_capture: None,
+            router: Router::new(ElementWidgetLookup),
+        }
+    }
+
+    fn capture_pointer(&mut self, target: ElementId) {
+        self.pointer_capture = Some(target);
+        self.router.capture(Some(target));
+    }
+
+    fn release_pointer(&mut self) {
+        self.pointer_capture = None;
+        self.router.capture(None);
+    }
+
+    fn has_pointer_capture(&self) -> bool {
+        self.pointer_capture.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -299,6 +330,7 @@ impl Ui {
             hover: HoverState::new(),
             clicks: ClickState::new(),
             pressed: None,
+            responder: ResponderState::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
             box_tree: BoxTree::new(),
@@ -1130,10 +1162,11 @@ impl Ui {
     }
 
     fn pointer_move(&mut self, viewport: Size, point: Point, pointer: PointerInfo) -> bool {
-        let route = self.pointer_route(viewport, point);
-        let mut changed = self.apply_hover_route(&route);
+        let hit = self.hit_target(viewport, point);
+        let hover_route = self.hover_route_from_hit(hit.as_ref());
+        let mut changed = self.apply_hover_route(&hover_route);
         self.clicks.on_move(pointer_id(pointer), point);
-        if route.target.is_none() {
+        if hit.is_none() && !self.responder.has_pointer_capture() {
             self.clicks.cancel(pointer_id(pointer));
             changed |= self.set_pressed_element(None);
         }
@@ -1147,9 +1180,10 @@ impl Ui {
         timestamp: u64,
         pointer: PointerInfo,
     ) -> bool {
-        let route = self.pointer_route(viewport, point);
-        let mut changed = self.apply_hover_route(&route);
-        if let Some(target) = route.target {
+        let hit = self.hit_target(viewport, point);
+        let hover_route = self.hover_route_from_hit(hit.as_ref());
+        let mut changed = self.apply_hover_route(&hover_route);
+        if let Some(target) = hit.as_ref().map(|target| target.element) {
             self.clicks.on_down(
                 pointer_id(pointer),
                 Some(primary_button()),
@@ -1157,6 +1191,7 @@ impl Ui {
                 point,
                 timestamp_ms(timestamp),
             );
+            self.responder.capture_pointer(target);
             changed |= self.set_pressed_element(Some(target));
         } else {
             self.clicks.cancel(pointer_id(pointer));
@@ -1172,9 +1207,11 @@ impl Ui {
         timestamp: u64,
         pointer: PointerInfo,
     ) -> bool {
-        let route = self.pointer_route(viewport, point);
-        let mut changed = self.apply_hover_route(&route);
-        let click = if let Some(target) = route.target {
+        let hit = self.hit_target(viewport, point);
+        let route = self.pointer_route_from_hit(hit.as_ref());
+        let hover_route = self.hover_route_from_hit(hit.as_ref());
+        let mut changed = self.apply_hover_route(&hover_route);
+        let click = if let Some(target) = hit.as_ref().map(|target| target.element) {
             self.clicks.on_up(
                 pointer_id(pointer),
                 Some(primary_button()),
@@ -1190,6 +1227,7 @@ impl Ui {
         if let ClickResult::Click(id) = click {
             changed |= self.dispatch_activation(&route.dispatches, id);
         }
+        self.responder.release_pointer();
         changed
     }
 
@@ -1197,25 +1235,44 @@ impl Ui {
         self.clicks.cancel(pointer_id(pointer));
         let mut changed = self.clear_hover();
         changed |= self.set_pressed_element(None);
+        self.responder.release_pointer();
         changed
     }
 
+    #[cfg(test)]
     fn pointer_route(&mut self, viewport: Size, point: Point) -> PointerRoute {
-        let Some(target) = self.hit_target(viewport, point) else {
-            return PointerRoute::default();
-        };
+        let hit = self.hit_target(viewport, point);
+        self.pointer_route_from_hit(hit.as_ref())
+    }
+
+    fn pointer_route_from_hit(&self, hit: Option<&HitTarget>) -> PointerRoute {
+        self.route_hit(&self.responder.router, hit)
+    }
+
+    fn hover_route_from_hit(&self, hit: Option<&HitTarget>) -> PointerRoute {
         let router = Router::<ElementId, ElementWidgetLookup>::new(ElementWidgetLookup);
-        let hit = ResolvedHitRef {
-            node: target.element,
-            path: Some(&target.path),
-            depth_key: DepthKey::Z(0),
-            localizer: Localizer::new(),
-            meta: (),
+        self.route_hit(&router, hit)
+    }
+
+    fn route_hit(&self, router: &ElementRouter, target: Option<&HitTarget>) -> PointerRoute {
+        let dispatches = if let Some(target) = target {
+            let hit = ResolvedHitRef {
+                node: target.element,
+                path: Some(&target.path),
+                depth_key: DepthKey::Z(0),
+                localizer: Localizer::new(),
+                meta: (),
+            };
+            router.handle_with_hits(&[hit])
+        } else {
+            let hits: [ResolvedHitRef<'_, ElementId, ()>; 0] = [];
+            router.handle_with_hits(&hits)
         };
-        PointerRoute {
-            target: Some(target.element),
-            dispatches: router.handle_with_hits(&[hit]),
-        }
+        let target = dispatches
+            .iter()
+            .find(|dispatch| matches!(dispatch.phase, Phase::Target))
+            .map(|dispatch| dispatch.node);
+        PointerRoute { target, dispatches }
     }
 
     fn apply_hover_route(&mut self, route: &PointerRoute) -> bool {
@@ -1641,6 +1698,34 @@ mod tests {
         assert_eq!(route.target, Some(id));
         assert_eq!(phases, vec![Phase::Capture, Phase::Target, Phase::Bubble]);
         assert_eq!(nodes, vec![ui.root(), id, ui.root()]);
+    }
+
+    #[test]
+    fn pointer_capture_routes_outside_hits_until_release() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(240.0, 80.0);
+        let id = ui.add_toggle(ui.root(), "Capture");
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::TOGGLE_PART)
+            .map(|node| node.bounds)
+            .expect("toggle should be presented");
+        let inside = bounds.center();
+        let outside = Point::new(viewport.width - 1.0, viewport.height - 1.0);
+
+        assert!(ui.pointer_event(viewport, &pointer_down(inside)));
+        assert_eq!(ui.pointer_route(viewport, outside).target, Some(id));
+
+        assert!(ui.pointer_event(viewport, &pointer_move(outside)));
+        assert_eq!(ui.pressed(), Some(id));
+        assert_eq!(ui.hovered(), None);
+
+        assert!(ui.pointer_event(viewport, &pointer_up(outside)));
+        assert_eq!(ui.pressed(), None);
+        assert!(!ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
+        assert_eq!(ui.pointer_route(viewport, outside).target, None);
     }
 
     fn primary_pointer() -> PointerInfo {
