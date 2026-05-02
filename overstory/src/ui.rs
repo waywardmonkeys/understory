@@ -9,6 +9,9 @@ use imaging::record;
 use invalidation::{ChannelSet, EagerPolicy, InvalidationTracker};
 use kurbo::{Insets, Rect, Size};
 use peniko::Brush;
+use understory_box_tree::{
+    LocalNode, NodeFlags, NodeId as BoxNodeId, QueryFilter, Tree as BoxTree,
+};
 use understory_property::{DependencyObject, DependencyObjectExt, Property, PropertyRegistry};
 use understory_style::{
     ClassId, MatchState, PartTag, ResolveCx, SelectorInputs, SelectorInputsOwned, StyleCascade,
@@ -38,9 +41,17 @@ pub struct Ui {
     text: TextSystem,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
+    box_tree: BoxTree,
+    box_targets: Vec<BoxTarget>,
     scene: record::Scene,
     scene_scale_factor: f64,
     scene_valid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BoxTarget {
+    box_node: BoxNodeId,
+    element: ElementId,
 }
 
 pub(crate) struct TemplateValueResolver<'a> {
@@ -247,6 +258,8 @@ impl Ui {
             text: TextSystem::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
+            box_tree: BoxTree::new(),
+            box_targets: Vec::new(),
             scene: record::Scene::new(),
             scene_scale_factor: 1.0,
             scene_valid: false,
@@ -382,18 +395,14 @@ impl Ui {
 
     /// Returns the topmost hit-testable element at `point`, rebuilding presentation if needed.
     pub fn hit_test(&mut self, viewport: Size, point: kurbo::Point) -> Option<ElementId> {
-        let candidates = self
-            .presentation(viewport)
-            .nodes()
+        self.presentation(viewport);
+        let hit = self
+            .box_tree
+            .hit_test_point(point, QueryFilter::new().visible().pickable())?;
+        self.box_targets
             .iter()
-            .rev()
-            .filter(|node| node.bounds.contains(point))
-            .map(|node| node.source)
-            .collect::<Vec<_>>();
-
-        candidates
-            .into_iter()
-            .find(|id| self.widget_hit_testable(*id))
+            .find(|target| target.box_node == hit.node)
+            .map(|target| target.element)
     }
 
     /// Returns `true` if `id` refers to a live element.
@@ -762,6 +771,7 @@ impl Ui {
         {
             self.presentation = self.build_presentation(viewport);
             self.presentation_viewport = Some(viewport);
+            self.rebuild_box_tree();
             self.drain_channel(STYLE);
             self.drain_channel(TEMPLATE);
             self.drain_channel(MEASURE);
@@ -929,6 +939,51 @@ impl Ui {
         }
     }
 
+    fn rebuild_box_tree(&mut self) {
+        self.box_tree = BoxTree::new();
+        self.box_targets.clear();
+        if let Some(root) = self.presentation.root() {
+            self.push_presentation_box(None, root);
+            let _ = self.box_tree.commit();
+        }
+    }
+
+    fn push_presentation_box(
+        &mut self,
+        parent: Option<BoxNodeId>,
+        presentation_id: PresentationNodeId,
+    ) -> BoxNodeId {
+        let node = self
+            .presentation
+            .node(presentation_id)
+            .expect("presentation ids should be live");
+        let source = node.source;
+        let bounds = node.bounds;
+        let children = node.children.clone();
+        let flags = if self.element_hit_testable(source) {
+            NodeFlags::VISIBLE | NodeFlags::PICKABLE
+        } else {
+            NodeFlags::VISIBLE
+        };
+        let box_node = self.box_tree.insert(
+            parent,
+            LocalNode {
+                local_bounds: bounds,
+                z_index: i32::try_from(presentation_id.raw()).unwrap_or(i32::MAX),
+                flags,
+                ..LocalNode::default()
+            },
+        );
+        self.box_targets.push(BoxTarget {
+            box_node,
+            element: source,
+        });
+        for child in children {
+            self.push_presentation_box(Some(box_node), child);
+        }
+        box_node
+    }
+
     fn measure_widget(&mut self, element: ElementId, available: Size) -> Size {
         let widget = self.take_widget(element);
         let size = widget.measure(self, element, available);
@@ -974,6 +1029,10 @@ impl Ui {
             .get(element.index())
             .and_then(|element| element.widget.as_deref())
             .is_some_and(Widget::hit_testable)
+    }
+
+    fn element_hit_testable(&self, element: ElementId) -> bool {
+        self.state(element).is_some_and(ElementState::enabled) && self.widget_hit_testable(element)
     }
 
     fn selector_pseudos(
@@ -1097,6 +1156,10 @@ mod tests {
             ))
         );
         assert!(has_badge_node);
+        assert_eq!(
+            ui.hit_test(Size::new(100.0, 100.0), kurbo::Point::new(1.0, 1.0)),
+            None
+        );
     }
 
     #[test]
@@ -1224,6 +1287,53 @@ mod tests {
             .map(|node| node.bounds.x0)
             .expect("toggle should emit a thumb after activation");
         assert!(updated_thumb_x > initial_thumb_x);
+    }
+
+    #[test]
+    fn disabled_widget_is_not_hit_testable() {
+        let mut ui = Ui::new();
+        let id = ui.add_button(ui.root(), "Disabled");
+        ui.set_enabled(id, false);
+        let tree = ui.presentation(Size::new(240.0, 80.0));
+        let button_bounds = tree
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::BUTTON_PART)
+            .map(|node| node.bounds)
+            .expect("button should be presented");
+
+        assert_eq!(
+            ui.hit_test(Size::new(240.0, 80.0), button_bounds.center()),
+            None
+        );
+    }
+
+    #[test]
+    fn hit_testing_uses_presentation_stack_order() {
+        let mut ui = Ui::new();
+        let first = ui.add_button(ui.root(), "First");
+        let second = ui.add_button(ui.root(), "Second");
+        ui.set_local(ui.root(), ui.properties().spacing, -8.0);
+        let tree = ui.presentation(Size::new(240.0, 80.0));
+        let first_bounds = tree
+            .nodes()
+            .iter()
+            .find(|node| node.source == first && node.kind == crate::BUTTON_PART)
+            .map(|node| node.bounds)
+            .expect("first button should be presented");
+        let second_bounds = tree
+            .nodes()
+            .iter()
+            .find(|node| node.source == second && node.kind == crate::BUTTON_PART)
+            .map(|node| node.bounds)
+            .expect("second button should be presented");
+        let overlap = first_bounds.intersect(second_bounds);
+
+        assert!(overlap.area() > 0.0);
+        assert_eq!(
+            ui.hit_test(Size::new(240.0, 80.0), overlap.center()),
+            Some(second)
+        );
     }
 
     #[test]

@@ -1728,6 +1728,7 @@ dependencies = [
  "kurbo",
  "parley",
  "peniko",
+ "understory_box_tree",
  "understory_property",
  "understory_style",
 ]

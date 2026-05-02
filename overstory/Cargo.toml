@@ -16,6 +16,7 @@ invalidation.workspace = true
 kurbo.workspace = true
 parley.workspace = true
 peniko.workspace = true
+understory_box_tree = { path = "../understory_box_tree" }
 understory_property = { path = "../understory_property" }
 understory_style = { path = "../understory_style" }
 
