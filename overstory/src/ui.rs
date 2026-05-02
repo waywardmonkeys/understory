@@ -20,6 +20,11 @@ use understory_event_state::{
     hover::{HoverEvent, HoverState},
 };
 use understory_property::{DependencyObject, DependencyObjectExt, Property, PropertyRegistry};
+use understory_responder::{
+    dispatcher,
+    router::{Router, path_from_dispatch},
+    types::{DepthKey, Dispatch, Localizer, Outcome, Phase, ResolvedHitRef, WidgetLookup},
+};
 use understory_style::{
     ClassId, MatchState, PartTag, ResolveCx, SelectorInputs, SelectorInputsOwned, StyleCascade,
     Theme, ThemeBuilder,
@@ -68,6 +73,25 @@ struct BoxTarget {
 struct HitTarget {
     element: ElementId,
     path: Vec<ElementId>,
+}
+
+type ResponderDispatch = Dispatch<ElementId, ElementId, ()>;
+
+#[derive(Clone, Debug, Default)]
+struct PointerRoute {
+    target: Option<ElementId>,
+    dispatches: Vec<ResponderDispatch>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ElementWidgetLookup;
+
+impl WidgetLookup<ElementId> for ElementWidgetLookup {
+    type WidgetId = ElementId;
+
+    fn widget_of(&self, node: &ElementId) -> Option<Self::WidgetId> {
+        Some(*node)
+    }
 }
 
 pub(crate) struct TemplateValueResolver<'a> {
@@ -1106,10 +1130,10 @@ impl Ui {
     }
 
     fn pointer_move(&mut self, viewport: Size, point: Point, pointer: PointerInfo) -> bool {
-        let target = self.hit_target(viewport, point);
-        let mut changed = self.apply_hover_target(target.as_ref());
+        let route = self.pointer_route(viewport, point);
+        let mut changed = self.apply_hover_route(&route);
         self.clicks.on_move(pointer_id(pointer), point);
-        if target.is_none() {
+        if route.target.is_none() {
             self.clicks.cancel(pointer_id(pointer));
             changed |= self.set_pressed_element(None);
         }
@@ -1123,17 +1147,17 @@ impl Ui {
         timestamp: u64,
         pointer: PointerInfo,
     ) -> bool {
-        let target = self.hit_target(viewport, point);
-        let mut changed = self.apply_hover_target(target.as_ref());
-        if let Some(target) = target {
+        let route = self.pointer_route(viewport, point);
+        let mut changed = self.apply_hover_route(&route);
+        if let Some(target) = route.target {
             self.clicks.on_down(
                 pointer_id(pointer),
                 Some(primary_button()),
-                target.element,
+                target,
                 point,
                 timestamp_ms(timestamp),
             );
-            changed |= self.set_pressed_element(Some(target.element));
+            changed |= self.set_pressed_element(Some(target));
         } else {
             self.clicks.cancel(pointer_id(pointer));
             changed |= self.set_pressed_element(None);
@@ -1148,13 +1172,13 @@ impl Ui {
         timestamp: u64,
         pointer: PointerInfo,
     ) -> bool {
-        let target = self.hit_target(viewport, point);
-        let mut changed = self.apply_hover_target(target.as_ref());
-        let click = if let Some(target) = target {
+        let route = self.pointer_route(viewport, point);
+        let mut changed = self.apply_hover_route(&route);
+        let click = if let Some(target) = route.target {
             self.clicks.on_up(
                 pointer_id(pointer),
                 Some(primary_button()),
-                &target.element,
+                &target,
                 point,
                 timestamp_ms(timestamp),
             )
@@ -1164,7 +1188,7 @@ impl Ui {
         };
         changed |= self.set_pressed_element(None);
         if let ClickResult::Click(id) = click {
-            changed |= self.activate(id);
+            changed |= self.dispatch_activation(&route.dispatches, id);
         }
         changed
     }
@@ -1176,13 +1200,42 @@ impl Ui {
         changed
     }
 
-    fn apply_hover_target(&mut self, target: Option<&HitTarget>) -> bool {
-        if let Some(target) = target {
-            let path = target.path.clone();
+    fn pointer_route(&mut self, viewport: Size, point: Point) -> PointerRoute {
+        let Some(target) = self.hit_target(viewport, point) else {
+            return PointerRoute::default();
+        };
+        let router = Router::<ElementId, ElementWidgetLookup>::new(ElementWidgetLookup);
+        let hit = ResolvedHitRef {
+            node: target.element,
+            path: Some(&target.path),
+            depth_key: DepthKey::Z(0),
+            localizer: Localizer::new(),
+            meta: (),
+        };
+        PointerRoute {
+            target: Some(target.element),
+            dispatches: router.handle_with_hits(&[hit]),
+        }
+    }
+
+    fn apply_hover_route(&mut self, route: &PointerRoute) -> bool {
+        if route.target.is_some() {
+            let path = path_from_dispatch(&route.dispatches);
             self.apply_hover_path(&path)
         } else {
             self.clear_hover()
         }
+    }
+
+    fn dispatch_activation(&mut self, dispatches: &[ResponderDispatch], target: ElementId) -> bool {
+        let mut changed = false;
+        dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
+            if matches!(dispatch.phase, Phase::Target) && dispatch.node == target {
+                *changed |= self.activate(target);
+            }
+            Outcome::Continue
+        });
+        changed
     }
 
     fn apply_hover_path(&mut self, path: &[ElementId]) -> bool {
@@ -1558,6 +1611,36 @@ mod tests {
         assert!(ui.pointer_event(viewport, &PointerEvent::Leave(primary_pointer())));
         assert_eq!(ui.hovered(), None);
         assert!(!ui.state(id).is_some_and(ElementState::hovered));
+    }
+
+    #[test]
+    fn pointer_route_uses_responder_capture_target_bubble() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(240.0, 80.0);
+        let id = ui.add_button(ui.root(), "Respond");
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::BUTTON_PART)
+            .map(|node| node.bounds)
+            .expect("button should be presented");
+
+        let route = ui.pointer_route(viewport, bounds.center());
+        let phases = route
+            .dispatches
+            .iter()
+            .map(|dispatch| dispatch.phase)
+            .collect::<Vec<_>>();
+        let nodes = route
+            .dispatches
+            .iter()
+            .map(|dispatch| dispatch.node)
+            .collect::<Vec<_>>();
+
+        assert_eq!(route.target, Some(id));
+        assert_eq!(phases, vec![Phase::Capture, Phase::Target, Phase::Bubble]);
+        assert_eq!(nodes, vec![ui.root(), id, ui.root()]);
     }
 
     fn primary_pointer() -> PointerInfo {
