@@ -1,0 +1,23 @@
+[package]
+name = "overstory_demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Winit visual demo for Overstory rendered through imaging_vello_hybrid."
+publish = false
+
+[dependencies]
+imaging_vello_hybrid.workspace = true
+kurbo.workspace = true
+overstory = { path = "../overstory", features = ["std"] }
+peniko = { workspace = true, features = ["std"] }
+pollster.workspace = true
+ui-events.workspace = true
+ui-events-winit.workspace = true
+understory_style = { path = "../understory_style" }
+winit.workspace = true
+
+[lints]
+workspace = true

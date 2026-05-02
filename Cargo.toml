@@ -19,6 +19,7 @@ members = [
   "understory_virtual_list",
   "understory_event_state",
   "overstory",
+  "overstory_demo",
   "benches",
   "examples",
 ]
@@ -42,9 +43,14 @@ hashbrown = { version = "0.17.0", default-features = false, features = [
 ] }
 invalidation = "0.2.0"
 imaging = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2", default-features = false }
+imaging_vello_hybrid = { git = "https://github.com/forest-rs/imaging.git", rev = "79f02aedf5b65b4cd151ef45d8b40013d7289ee2" }
 parley = { version = "0.8.0", default-features = false }
 peniko = { version = "0.6.0", default-features = false }
+pollster = "0.4.0"
 smallvec = { version = "1.13.2", default-features = false }
+ui-events = { version = "0.3.0", default-features = false, features = ["kurbo"] }
+ui-events-winit = { version = "0.3.0", default-features = false }
+winit = "0.30.13"
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7
