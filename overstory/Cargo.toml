@@ -1,0 +1,28 @@
+[package]
+name = "overstory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Semantic UI runtime built on Understory primitives."
+readme = "README.md"
+keywords = ["ui", "layout", "style"]
+categories = ["gui", "rendering"]
+
+[dependencies]
+imaging.workspace = true
+invalidation.workspace = true
+kurbo.workspace = true
+parley.workspace = true
+peniko.workspace = true
+understory_property = { path = "../understory_property" }
+understory_style = { path = "../understory_style" }
+
+[features]
+default = ["libm"]
+libm = ["imaging/libm", "kurbo/libm", "parley/libm", "peniko/libm"]
+std = ["imaging/std", "kurbo/std", "parley/system", "peniko/std"]
+
+[lints]
+workspace = true
