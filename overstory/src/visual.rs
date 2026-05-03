@@ -12,7 +12,7 @@ use imaging::{
 use kurbo::{Affine, RoundedRect, Stroke};
 use peniko::{Brush, Color, Fill, Style};
 
-use crate::{PresentationTree, TextSystem};
+use crate::{PresentationPrimitive, PresentationTree, TextSystem};
 
 /// Lowers a laid-out presentation tree into an owned imaging scene.
 #[must_use]
@@ -45,75 +45,82 @@ pub fn lower_presentation_with_scale(
     {
         let mut painter = Painter::new(&mut scene);
         for node in tree.nodes() {
-            if let Some(brush) = node.background.as_ref() {
-                if node.corner_radius > 0.0 {
-                    painter
-                        .fill(
-                            RoundedRect::from_rect(node.bounds, node.corner_radius),
+            for primitive in &node.primitives {
+                match primitive {
+                    PresentationPrimitive::Surface(surface) => {
+                        if let Some(brush) = surface.background.as_ref() {
+                            if surface.corner_radius > 0.0 {
+                                painter
+                                    .fill(
+                                        RoundedRect::from_rect(node.bounds, surface.corner_radius),
+                                        brush,
+                                    )
+                                    .transform(root_transform)
+                                    .draw();
+                            } else {
+                                painter
+                                    .fill(node.bounds, brush)
+                                    .transform(root_transform)
+                                    .draw();
+                            }
+                        }
+                        if let Some(brush) = surface.border.as_ref()
+                            && surface.border_width > 0.0
+                        {
+                            let stroke = Stroke::new(surface.border_width);
+                            if surface.corner_radius > 0.0 {
+                                painter
+                                    .stroke(
+                                        RoundedRect::from_rect(node.bounds, surface.corner_radius),
+                                        &stroke,
+                                        brush,
+                                    )
+                                    .transform(root_transform)
+                                    .draw();
+                            } else {
+                                painter
+                                    .stroke(node.bounds, &stroke, brush)
+                                    .transform(root_transform)
+                                    .draw();
+                            }
+                        }
+                    }
+                    PresentationPrimitive::Text(text_primitive) => {
+                        let brush = text_primitive
+                            .foreground
+                            .clone()
+                            .unwrap_or_else(|| Brush::Solid(Color::BLACK));
+                        for run in text.shape_with_style(
+                            &text_primitive.content,
                             brush,
-                        )
-                        .transform(root_transform)
-                        .draw();
-                } else {
-                    painter
-                        .fill(node.bounds, brush)
-                        .transform(root_transform)
-                        .draw();
-                }
-            }
-            if let Some(brush) = node.border.as_ref()
-                && node.border_width > 0.0
-            {
-                let stroke = Stroke::new(node.border_width);
-                if node.corner_radius > 0.0 {
-                    painter
-                        .stroke(
-                            RoundedRect::from_rect(node.bounds, node.corner_radius),
-                            &stroke,
-                            brush,
-                        )
-                        .transform(root_transform)
-                        .draw();
-                } else {
-                    painter
-                        .stroke(node.bounds, &stroke, brush)
-                        .transform(root_transform)
-                        .draw();
-                }
-            }
+                            &text_primitive.style,
+                            Some(crate::text::text_width_f32(node.bounds.width())),
+                        ) {
+                            if run.glyphs.is_empty() {
+                                continue;
+                            }
 
-            let Some(content) = node.text.as_ref() else {
-                continue;
-            };
-            let brush = node
-                .foreground
-                .clone()
-                .unwrap_or_else(|| Brush::Solid(Color::BLACK));
-            for run in text.shape_with_style(
-                content,
-                brush,
-                &node.text_style,
-                Some(crate::text::text_width_f32(node.bounds.width())),
-            ) {
-                if run.glyphs.is_empty() {
-                    continue;
+                            let glyphs = run
+                                .glyphs
+                                .iter()
+                                .map(|glyph| Glyph {
+                                    id: glyph.id,
+                                    x: glyph.x,
+                                    y: glyph.y,
+                                })
+                                .collect::<Vec<_>>();
+                            painter
+                                .glyphs(&run.font, &run.brush)
+                                .transform(
+                                    root_transform
+                                        * Affine::translate((node.bounds.x0, node.bounds.y0)),
+                                )
+                                .font_size(run.font_size)
+                                .normalized_coords(&run.normalized_coords)
+                                .draw(&Style::Fill(Fill::NonZero), &glyphs);
+                        }
+                    }
                 }
-
-                let glyphs = run
-                    .glyphs
-                    .iter()
-                    .map(|glyph| Glyph {
-                        id: glyph.id,
-                        x: glyph.x,
-                        y: glyph.y,
-                    })
-                    .collect::<Vec<_>>();
-                painter
-                    .glyphs(&run.font, &run.brush)
-                    .transform(root_transform * Affine::translate((node.bounds.x0, node.bounds.y0)))
-                    .font_size(run.font_size)
-                    .normalized_coords(&run.normalized_coords)
-                    .draw(&Style::Fill(Fill::NonZero), &glyphs);
             }
         }
     }

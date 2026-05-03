@@ -262,27 +262,27 @@ impl TemplateValueSource for TemplateValueResolver<'_> {
     ) {
         if binding.target == crate::BACKGROUND_PROPERTY {
             if let Some(value) = self.resolve_brush(binding.source) {
-                node.background = value;
+                node.surface_primitive_mut().background = value;
             }
         } else if binding.target == crate::FOREGROUND_PROPERTY {
             if let Some(value) = self.resolve_brush(binding.source) {
-                node.foreground = value;
+                node.text_primitive_mut().foreground = value;
             }
         } else if binding.target == crate::BORDER_PROPERTY {
             if let Some(value) = self.resolve_brush(binding.source) {
-                node.border = value;
+                node.surface_primitive_mut().border = value;
             }
         } else if binding.target == crate::BORDER_WIDTH_PROPERTY {
             if let Some(value) = self.resolve_f64(binding.source) {
-                node.border_width = value;
+                node.surface_primitive_mut().border_width = value;
             }
         } else if binding.target == crate::PADDING_PROPERTY {
             if binding.source == crate::PADDING_PROPERTY {
-                node.padding = Some(self.resolve::<Insets>(self.ui.properties.padding));
+                let _padding = self.resolve::<Insets>(self.ui.properties.padding);
             }
         } else if binding.target == crate::CORNER_RADIUS_PROPERTY {
             if let Some(value) = self.resolve_f64(binding.source) {
-                node.corner_radius = value;
+                node.surface_primitive_mut().corner_radius = value;
             }
         } else if binding.target == crate::CONTENT_PROPERTY
             && binding.source == crate::CONTENT_PROPERTY
@@ -318,8 +318,9 @@ impl TemplateValueResolver<'_> {
     }
 
     fn apply_content(&self, node: &mut PresentationNode) {
-        node.text = self.content.clone();
-        node.text_style = self.text_style();
+        let text = node.text_primitive_mut();
+        text.content = self.content.clone().unwrap_or_default();
+        text.style = self.text_style();
     }
 }
 
@@ -1223,7 +1224,7 @@ impl Ui {
             ROOT_PART,
             Rect::from_origin_size((0.0, 0.0), viewport),
         );
-        root_node.background = root_background;
+        root_node.surface_primitive_mut().background = root_background;
         let root_presentation = tree.push(root_node);
 
         self.push_root_children(&mut tree, root_presentation, root_padding, viewport);
@@ -1853,6 +1854,16 @@ mod tests {
     use ui_events::keyboard::{Code, Key, KeyboardEvent, NamedKey};
     use ui_events::pointer::{PointerId, PointerInfo, PointerState, PointerType};
 
+    fn surface(node: &PresentationNode) -> &crate::SurfacePrimitive {
+        node.surface_primitive()
+            .expect("node should carry a surface primitive")
+    }
+
+    fn text(node: &PresentationNode) -> &crate::TextPrimitive {
+        node.text_primitive()
+            .expect("node should carry a text primitive")
+    }
+
     #[test]
     fn semantic_marks_cascade_to_visual() {
         let mut ui = Ui::new();
@@ -2189,11 +2200,10 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
             .map(|node| {
+                let text = text(node);
                 (
-                    node.text
-                        .as_ref()
-                        .is_some_and(|text| text.as_str() == "A short label"),
-                    node.text_style.font_size(),
+                    text.content.as_str() == "A short label",
+                    text.style.font_size(),
                 )
             })
             .expect("text block should emit a content presenter");
@@ -2221,8 +2231,8 @@ mod tests {
             .nodes()
             .iter()
             .find(|node| node.source == id && node.kind == crate::CONTENT_PRESENTER_PART)
-            .and_then(|node| node.text.as_ref())
-            .map(TextContent::as_str);
+            .map(text)
+            .map(|text| text.content.as_str());
         assert_eq!(presenter_text, Some("a"));
     }
 
@@ -2704,9 +2714,9 @@ mod tests {
             .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
             .expect("toggle template should emit a content presenter");
 
-        assert_eq!(track.background, Some(background.clone()));
-        assert_eq!(thumb.background, Some(foreground.clone()));
-        assert_eq!(content.text.as_ref().map(TextContent::as_str), Some("Sync"));
+        assert_eq!(surface(track).background, Some(background.clone()));
+        assert_eq!(surface(thumb).background, Some(foreground.clone()));
+        assert_eq!(text(content).content.as_str(), "Sync");
 
         assert!(ui.activate(id));
         let checked = ui.presentation(Size::new(240.0, 80.0));
@@ -2721,8 +2731,8 @@ mod tests {
             .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
             .expect("checked toggle should emit a thumb part");
 
-        assert_eq!(checked_track.background, Some(foreground));
-        assert_eq!(checked_thumb.background, Some(background));
+        assert_eq!(surface(checked_track).background, Some(foreground));
+        assert_eq!(surface(checked_thumb).background, Some(background));
     }
 
     #[test]
@@ -2783,9 +2793,9 @@ mod tests {
             .find(|node| node.kind == CUSTOM_LABEL_PART)
             .expect("custom template should emit its own label part");
 
-        assert_eq!(groove.background, Some(background.clone()));
-        assert_eq!(knob.background, Some(foreground));
-        assert_eq!(label.text.as_ref().map(TextContent::as_str), Some("Custom"));
+        assert_eq!(surface(groove).background, Some(background.clone()));
+        assert_eq!(surface(knob).background, Some(foreground));
+        assert_eq!(text(label).content.as_str(), "Custom");
         assert!(knob.bounds.x0 > groove.bounds.x0);
         assert!(label.bounds.x0 > groove.bounds.x1);
     }
@@ -2829,7 +2839,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
             .expect("built-in toggle template should emit a nested thumb");
-        assert_eq!(built_in_thumb.background, Some(nested));
+        assert_eq!(surface(built_in_thumb).background, Some(nested));
 
         ui.set_local(
             id,
@@ -2860,7 +2870,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == CUSTOM_KNOB_PART)
             .expect("custom template should emit a sibling thumb");
-        assert_eq!(custom_knob.background, Some(fallback));
+        assert_eq!(surface(custom_knob).background, Some(fallback));
     }
 
     fn set_test_toggle_style(ui: &mut Ui, id: ElementId, background: Brush, foreground: Brush) {
@@ -3126,8 +3136,8 @@ mod tests {
             .find(|node| node.kind == crate::BORDER_PART)
             .expect("custom template should emit a border part");
 
-        assert_eq!(border_node.background, Some(border));
-        assert_eq!(border_node.border, Some(background));
+        assert_eq!(surface(border_node).background, Some(border));
+        assert_eq!(surface(border_node).border, Some(background));
     }
 
     #[test]
@@ -3272,7 +3282,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::BORDER_PART)
             .expect("button template should emit a border");
-        assert_eq!(border.background, Some(base));
+        assert_eq!(surface(border).background, Some(base));
         assert!(!ui.is_invalidated(id, STYLE));
         assert!(!ui.is_invalidated(id, TEMPLATE));
         assert!(!ui.is_invalidated(id, MEASURE));
@@ -3293,7 +3303,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::BORDER_PART)
             .expect("button template should still emit a border");
-        assert_eq!(border.background, Some(hover));
+        assert_eq!(surface(border).background, Some(hover));
     }
 
     #[test]
@@ -3332,7 +3342,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
             .expect("button template should emit content");
-        assert_eq!(content.foreground, Some(base));
+        assert_eq!(text(content).foreground, Some(base));
 
         ui.set_hovered(id, true);
 
@@ -3348,7 +3358,7 @@ mod tests {
             .iter()
             .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
             .expect("button template should still emit content");
-        assert_eq!(content.foreground, Some(hover));
+        assert_eq!(text(content).foreground, Some(hover));
     }
 
     #[test]

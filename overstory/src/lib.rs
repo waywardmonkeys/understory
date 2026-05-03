@@ -42,7 +42,10 @@ pub use element::{
     ROOT_TYPE, ROW_TYPE, TEXT_BLOCK_TYPE, TEXT_INPUT_TYPE, TOGGLE_TYPE,
 };
 pub use id::ElementId;
-pub use presentation::{PresentationNode, PresentationNodeId, PresentationTree};
+pub use presentation::{
+    PresentationNode, PresentationNodeId, PresentationPrimitive, PresentationTree,
+    SurfacePrimitive, TextPrimitive,
+};
 pub use property::{TextContent, TextStyle, UiProperties};
 pub use style::{StyleInspection, StyleRuleInspection, StyleSourceInspection, StyleSubject};
 pub use template::{

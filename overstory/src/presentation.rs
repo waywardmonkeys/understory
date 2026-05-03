@@ -8,8 +8,6 @@ use alloc::vec::Vec;
 use kurbo::Rect;
 use peniko::Brush;
 
-use kurbo::Insets;
-
 use crate::{ElementId, PartKind, TextContent, TextStyle};
 
 /// Stable identifier for a node in a [`PresentationTree`].
@@ -34,6 +32,39 @@ impl PresentationNodeId {
     }
 }
 
+/// Resolved visual primitive carried by a presentation node.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PresentationPrimitive {
+    /// Fill and/or stroke a rectangular surface.
+    Surface(SurfacePrimitive),
+    /// Draw shaped text.
+    Text(TextPrimitive),
+}
+
+/// Surface fill/stroke data.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SurfacePrimitive {
+    /// Optional fill brush.
+    pub background: Option<Brush>,
+    /// Optional stroke brush.
+    pub border: Option<Brush>,
+    /// Border stroke width in logical UI coordinates.
+    pub border_width: f64,
+    /// Corner radius for fill and stroke.
+    pub corner_radius: f64,
+}
+
+/// Text drawing data.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextPrimitive {
+    /// Text content to draw.
+    pub content: TextContent,
+    /// Optional foreground brush.
+    pub foreground: Option<Brush>,
+    /// Text styling used when lowering text.
+    pub style: TextStyle,
+}
+
 /// A laid-out node produced by semantic template expansion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresentationNode {
@@ -43,22 +74,8 @@ pub struct PresentationNode {
     pub kind: PartKind,
     /// Arranged bounds in the UI coordinate space.
     pub bounds: Rect,
-    /// Optional background brush to emit during visual lowering.
-    pub background: Option<Brush>,
-    /// Optional border brush to stroke during visual lowering.
-    pub border: Option<Brush>,
-    /// Border stroke width in logical UI coordinates.
-    pub border_width: f64,
-    /// Optional foreground brush inherited or bound from the semantic element.
-    pub foreground: Option<Brush>,
-    /// Optional padding bound into this presentation node.
-    pub padding: Option<Insets>,
-    /// Corner radius for background fills.
-    pub corner_radius: f64,
-    /// Optional text carried by a content presenter.
-    pub text: Option<TextContent>,
-    /// Text styling used when lowering text.
-    pub text_style: TextStyle,
+    /// Visual primitives emitted by this node.
+    pub primitives: Vec<PresentationPrimitive>,
     /// Child presentation nodes.
     pub children: Vec<PresentationNodeId>,
 }
@@ -71,16 +88,95 @@ impl PresentationNode {
             source,
             kind,
             bounds,
-            background: None,
-            border: None,
-            border_width: 0.0,
-            foreground: None,
-            padding: None,
-            corner_radius: 0.0,
-            text: None,
-            text_style: TextStyle::default(),
+            primitives: Vec::new(),
             children: Vec::new(),
         }
+    }
+
+    /// Creates a presentation node with one surface primitive.
+    #[must_use]
+    pub fn surface(
+        source: ElementId,
+        kind: PartKind,
+        bounds: Rect,
+        surface: SurfacePrimitive,
+    ) -> Self {
+        let mut node = Self::new(source, kind, bounds);
+        node.primitives
+            .push(PresentationPrimitive::Surface(surface));
+        node
+    }
+
+    /// Creates a presentation node with one text primitive.
+    #[must_use]
+    pub fn text(source: ElementId, kind: PartKind, bounds: Rect, text: TextPrimitive) -> Self {
+        let mut node = Self::new(source, kind, bounds);
+        node.primitives.push(PresentationPrimitive::Text(text));
+        node
+    }
+
+    /// Returns the first surface primitive, if any.
+    #[must_use]
+    pub fn surface_primitive(&self) -> Option<&SurfacePrimitive> {
+        self.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PresentationPrimitive::Surface(surface) => Some(surface),
+                PresentationPrimitive::Text(_) => None,
+            })
+    }
+
+    /// Returns the first text primitive, if any.
+    #[must_use]
+    pub fn text_primitive(&self) -> Option<&TextPrimitive> {
+        self.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PresentationPrimitive::Surface(_) => None,
+                PresentationPrimitive::Text(text) => Some(text),
+            })
+    }
+
+    pub(crate) fn surface_primitive_mut(&mut self) -> &mut SurfacePrimitive {
+        if let Some(index) = self
+            .primitives
+            .iter()
+            .position(|primitive| matches!(primitive, PresentationPrimitive::Surface(_)))
+        {
+            let PresentationPrimitive::Surface(surface) = &mut self.primitives[index] else {
+                unreachable!("matched surface primitive");
+            };
+            return surface;
+        }
+        self.primitives
+            .push(PresentationPrimitive::Surface(SurfacePrimitive::default()));
+        let Some(PresentationPrimitive::Surface(surface)) = self.primitives.last_mut() else {
+            unreachable!("just pushed surface primitive");
+        };
+        surface
+    }
+
+    pub(crate) fn text_primitive_mut(&mut self) -> &mut TextPrimitive {
+        if let Some(index) = self
+            .primitives
+            .iter()
+            .position(|primitive| matches!(primitive, PresentationPrimitive::Text(_)))
+        {
+            let PresentationPrimitive::Text(text) = &mut self.primitives[index] else {
+                unreachable!("matched text primitive");
+            };
+            return text;
+        }
+        self.primitives
+            .push(PresentationPrimitive::Text(TextPrimitive {
+                content: TextContent::default(),
+                foreground: None,
+                style: TextStyle::default(),
+            }));
+        let Some(PresentationPrimitive::Text(text)) = self.primitives.last_mut() else {
+            unreachable!("just pushed text primitive");
+        };
+        text
     }
 }
 

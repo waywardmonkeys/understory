@@ -17,8 +17,8 @@ use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerQueue, TimerR
 
 use crate::{
     ElementId, ElementKind, PresentationNode, PresentationNodeId, PresentationTree, ROW_PART,
-    TEXT_CARET_PART, TEXT_SELECTION_PART, TOGGLE_THUMB_SLOT, TOGGLE_TRACK_SLOT, TemplateLayout,
-    TemplateSlotLayout, TextContent, TextSystem, Ui,
+    SurfacePrimitive, TEXT_CARET_PART, TEXT_SELECTION_PART, TOGGLE_THUMB_SLOT, TOGGLE_TRACK_SLOT,
+    TemplateLayout, TemplateSlotLayout, TextContent, TextSystem, Ui,
 };
 
 const TEXT_INPUT_BLINK_INTERVAL: TimerDuration = 500_000_000;
@@ -793,7 +793,7 @@ impl Widget for TextInput {
                 TEXT_SELECTION_PART,
                 *selection + content_bounds.origin().to_vec2(),
             );
-            node.background = Some(selection_brush.clone());
+            node.surface_primitive_mut().background = Some(selection_brush.clone());
             tree.push_child(id, node);
         }
         if focused
@@ -805,7 +805,8 @@ impl Widget for TextInput {
                 TEXT_CARET_PART,
                 cursor + content_bounds.origin().to_vec2(),
             );
-            node.background = ui.resolve::<Option<peniko::Brush>>(element, props.foreground);
+            node.surface_primitive_mut().background =
+                ui.resolve::<Option<peniko::Brush>>(element, props.foreground);
             tree.push_child(id, node);
         }
         let subjects = values.into_retained_subjects();
@@ -1008,12 +1009,18 @@ impl Widget for Panel {
         element: ElementId,
         bounds: Rect,
     ) -> PresentationNodeId {
-        let mut node = PresentationNode::new(element, ElementKind::PANEL.part_kind(), bounds);
         let props = ui.properties();
-        node.background = ui.resolve::<Option<peniko::Brush>>(element, props.background);
-        node.border = ui.resolve::<Option<peniko::Brush>>(element, props.border);
-        node.border_width = ui.resolve::<f64>(element, props.border_width);
-        node.corner_radius = ui.resolve::<f64>(element, props.corner_radius);
+        let node = PresentationNode::surface(
+            element,
+            ElementKind::PANEL.part_kind(),
+            bounds,
+            SurfacePrimitive {
+                background: ui.resolve::<Option<peniko::Brush>>(element, props.background),
+                border: ui.resolve::<Option<peniko::Brush>>(element, props.border),
+                border_width: ui.resolve::<f64>(element, props.border_width),
+                corner_radius: ui.resolve::<f64>(element, props.corner_radius),
+            },
+        );
         let id = tree.push_child(parent, node);
 
         let padding = ui.resolve::<Insets>(element, props.padding);
@@ -1090,12 +1097,18 @@ impl Widget for Row {
         element: ElementId,
         bounds: Rect,
     ) -> PresentationNodeId {
-        let mut node = PresentationNode::new(element, ROW_PART, bounds);
         let props = ui.properties();
-        node.background = ui.resolve::<Option<peniko::Brush>>(element, props.background);
-        node.border = ui.resolve::<Option<peniko::Brush>>(element, props.border);
-        node.border_width = ui.resolve::<f64>(element, props.border_width);
-        node.corner_radius = ui.resolve::<f64>(element, props.corner_radius);
+        let node = PresentationNode::surface(
+            element,
+            ROW_PART,
+            bounds,
+            SurfacePrimitive {
+                background: ui.resolve::<Option<peniko::Brush>>(element, props.background),
+                border: ui.resolve::<Option<peniko::Brush>>(element, props.border),
+                border_width: ui.resolve::<f64>(element, props.border_width),
+                corner_radius: ui.resolve::<f64>(element, props.corner_radius),
+            },
+        );
         let id = tree.push_child(parent, node);
 
         let padding = ui.resolve::<Insets>(element, props.padding);
