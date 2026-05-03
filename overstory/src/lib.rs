@@ -22,6 +22,7 @@
 extern crate alloc;
 
 mod channel;
+pub mod compose;
 mod element;
 mod id;
 mod presentation;
@@ -34,6 +35,7 @@ mod visual;
 mod widget;
 
 pub use channel::{ARRANGE, MEASURE, STYLE, TEMPLATE, VISUAL};
+pub use compose::AppendSpec;
 pub use element::{
     BUTTON_TYPE, CHECKED, DISABLED, ElementKind, ElementState, HOVERED, PANEL_TYPE, PRESSED,
     ROOT_TYPE, ROW_TYPE, TEXT_BLOCK_TYPE, TOGGLE_TYPE,

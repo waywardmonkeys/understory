@@ -36,9 +36,9 @@ use crate::element::{Element, RetainedStyleSubject};
 use crate::style::{StyleInspection, StyleRuleInspection, StyleSourceInspection, StyleSubject};
 use crate::template::{TemplateBinding, TemplateValueSource};
 use crate::{
-    ARRANGE, Button, ElementId, ElementKind, ElementState, MEASURE, Panel, PresentationNode,
-    PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE, TemplateSlot, TextBlock,
-    TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
+    ARRANGE, AppendSpec, Button, ElementId, ElementKind, ElementState, MEASURE, Panel,
+    PresentationNode, PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE,
+    TemplateSlot, TextBlock, TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
     widget::{KeyboardEventCx, PointerEventCx, Widget},
 };
 
@@ -395,6 +395,11 @@ impl Ui {
     /// Adds a toggle under `parent`.
     pub fn add_toggle(&mut self, parent: ElementId, content: impl Into<TextContent>) -> ElementId {
         self.append(parent, Toggle::new(content))
+    }
+
+    /// Appends a configured widget spec under `parent`.
+    pub fn append_spec(&mut self, parent: ElementId, spec: impl AppendSpec) -> ElementId {
+        spec.append_to(self, parent)
     }
 
     /// Appends a widget under `parent`.
