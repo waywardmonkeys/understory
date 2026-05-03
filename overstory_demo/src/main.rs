@@ -23,6 +23,7 @@ use overstory::{
     BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART, CHECKED,
     CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CORNER_RADIUS_PROPERTY, ControlTemplate,
     FOREGROUND_PROPERTY, HOVERED, PADDING_PROPERTY, PRESSED, TemplateBinding, TemplateNode, Ui,
+    compose,
 };
 use peniko::{Brush, Color as PaintColor};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
@@ -464,67 +465,65 @@ fn build_ui() -> Ui {
         Some(Brush::from(PaintColor::from_rgb8(0xe9, 0xec, 0xf1))),
     );
 
-    let panel = ui.add_panel(ui.root());
-    ui.set_local(
-        panel,
-        props.padding,
-        kurbo::Insets::new(22.0, 20.0, 22.0, 22.0),
-    );
-    ui.set_local(panel, props.spacing, 12.0);
-    ui.set_local(
-        panel,
-        props.background,
-        Some(Brush::from(PaintColor::from_rgb8(0x1b, 0x1f, 0x26))),
-    );
-    ui.set_local(
-        panel,
-        props.border,
-        Some(Brush::from(PaintColor::from_rgb8(0x38, 0x42, 0x50))),
-    );
-    ui.set_local(panel, props.border_width, 1.0);
-    ui.set_local(panel, props.corner_radius, 18.0);
-
-    let title = ui.add_text_block(panel, "Open widgets");
-    ui.set_local(title, props.padding, kurbo::Insets::uniform(0.0));
-    ui.set_local(title, props.font_size, 24.0);
-    ui.set_local(
-        title,
-        props.foreground,
-        Some(Brush::from(PaintColor::from_rgb8(0xff, 0xff, 0xff))),
+    let panel = ui.append_spec(
+        ui.root(),
+        compose::panel()
+            .set(props.padding, kurbo::Insets::new(22.0, 20.0, 22.0, 22.0))
+            .set(props.spacing, 12.0)
+            .set(
+                props.background,
+                Some(Brush::from(PaintColor::from_rgb8(0x1b, 0x1f, 0x26))),
+            )
+            .set(
+                props.border,
+                Some(Brush::from(PaintColor::from_rgb8(0x38, 0x42, 0x50))),
+            )
+            .set(props.border_width, 1.0)
+            .set(props.corner_radius, 18.0),
     );
 
-    let summary = ui.add_text_block(
+    ui.append_spec(
         panel,
-        "Button and TextBlock now own their own measurement and presentation. The runtime keeps identity, properties, style, invalidation, and layout scheduling.",
-    );
-    ui.set_local(summary, props.padding, kurbo::Insets::uniform(0.0));
-    ui.set_local(summary, props.font_size, 14.0);
-    ui.set_local(summary, props.min_width, 360.0);
-    ui.set_local(
-        summary,
-        props.foreground,
-        Some(Brush::from(PaintColor::from_rgb8(0xb5, 0xbe, 0xca))),
+        compose::text_block("Open widgets")
+            .set(props.padding, kurbo::Insets::uniform(0.0))
+            .set(props.font_size, 24.0)
+            .set(
+                props.foreground,
+                Some(Brush::from(PaintColor::from_rgb8(0xff, 0xff, 0xff))),
+            ),
     );
 
-    let row = ui.add_row(panel);
-    ui.set_local(row, props.spacing, 10.0);
-    ui.set_local(row, props.padding, kurbo::Insets::uniform(0.0));
-    ui.set_style(row, row_style(&ui));
+    ui.append_spec(
+        panel,
+        compose::text_block(
+            "Button and TextBlock now own their own measurement and presentation. The runtime keeps identity, properties, style, invalidation, and layout scheduling.",
+        )
+        .set(props.padding, kurbo::Insets::uniform(0.0))
+        .set(props.font_size, 14.0)
+        .set(props.min_width, 360.0)
+        .set(
+            props.foreground,
+            Some(Brush::from(PaintColor::from_rgb8(0xb5, 0xbe, 0xca))),
+        ),
+    );
+
+    let row = ui.append_spec(
+        panel,
+        compose::row()
+            .set(props.spacing, 10.0)
+            .set(props.padding, kurbo::Insets::uniform(0.0))
+            .style(row_style(&ui)),
+    );
 
     for (label, checked) in [("Sync", true), ("Draft", false)] {
-        let toggle = ui.add_toggle(row, label);
-        ui.set_local(
-            toggle,
-            props.padding,
-            kurbo::Insets::new(0.0, 3.0, 0.0, 3.0),
+        ui.append_spec(
+            row,
+            compose::toggle(label)
+                .checked(checked)
+                .set(props.padding, kurbo::Insets::new(0.0, 3.0, 0.0, 3.0))
+                .set(props.min_width, 112.0)
+                .style(toggle_style(&ui)),
         );
-        ui.set_local(toggle, props.min_width, 112.0);
-        ui.set_style(toggle, toggle_style(&ui));
-        if checked {
-            ui.update_widget::<overstory::Toggle, _>(toggle, |widget| {
-                widget.set_checked(true);
-            });
-        }
     }
 
     for (label, style, template, radius, padding, min_width) in [
@@ -553,12 +552,15 @@ fn build_ui() -> Ui {
             196.0,
         ),
     ] {
-        let button = ui.add_button(panel, label);
-        ui.set_local(button, props.padding, padding);
-        ui.set_local(button, props.min_width, min_width);
-        ui.set_local(button, props.corner_radius, radius);
-        ui.set_local(button, props.template, template);
-        ui.set_style(button, style);
+        ui.append_spec(
+            panel,
+            compose::button(label)
+                .set(props.padding, padding)
+                .set(props.min_width, min_width)
+                .set(props.corner_radius, radius)
+                .template(template)
+                .style(style),
+        );
     }
 
     ui
