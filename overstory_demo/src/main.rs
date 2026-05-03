@@ -20,14 +20,14 @@ use imaging_vello_hybrid::wgpu::{
 };
 use kurbo::Size;
 use overstory::{
-    BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART, CHECKED,
+    BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART,
     CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CORNER_RADIUS_PROPERTY, ControlTemplate,
     FOREGROUND_PROPERTY, HOVERED, PADDING_PROPERTY, PRESSED, TemplateBinding, TemplateNode, Ui,
-    compose,
+    built_in, compose,
 };
 use peniko::{Brush, Color as PaintColor};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
-use understory_style::{StyleBuilder, StyleCascadeBuilder, StyleOrigin};
+use understory_style::{ClassId, StyleBuilder, StyleCascadeBuilder, StyleOrigin};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::error::EventLoopError;
@@ -37,6 +37,9 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 const WINDOW_WIDTH: f64 = 680.0;
 const WINDOW_HEIGHT: f64 = 400.0;
+const PRIMARY_BUTTON: ClassId = ClassId(1);
+const SURFACE_BUTTON: ClassId = ClassId(2);
+const ALERT_BUTTON: ClassId = ClassId(3);
 
 const BLIT_SHADER: &str = r#"
 @group(0) @binding(0) var scene_texture: texture_2d<f32>;
@@ -470,16 +473,8 @@ fn build_ui() -> Ui {
         compose::panel()
             .set(props.padding, kurbo::Insets::new(22.0, 20.0, 22.0, 22.0))
             .set(props.spacing, 12.0)
-            .set(
-                props.background,
-                Some(Brush::from(PaintColor::from_rgb8(0x1b, 0x1f, 0x26))),
-            )
-            .set(
-                props.border,
-                Some(Brush::from(PaintColor::from_rgb8(0x38, 0x42, 0x50))),
-            )
-            .set(props.border_width, 1.0)
-            .set(props.corner_radius, 18.0),
+            .set(props.corner_radius, 18.0)
+            .style(built_in::panel_style(props)),
     );
 
     ui.append_spec(
@@ -512,7 +507,7 @@ fn build_ui() -> Ui {
         compose::row()
             .set(props.spacing, 10.0)
             .set(props.padding, kurbo::Insets::uniform(0.0))
-            .style(row_style(&ui)),
+            .style(built_in::row_style(props)),
     );
 
     for (label, checked) in [("Sync", true), ("Draft", false)] {
@@ -522,14 +517,15 @@ fn build_ui() -> Ui {
                 .checked(checked)
                 .set(props.padding, kurbo::Insets::new(0.0, 3.0, 0.0, 3.0))
                 .set(props.min_width, 112.0)
-                .style(toggle_style(&ui)),
+                .style(built_in::toggle_style(props)),
         );
     }
 
-    for (label, style, template, radius, padding, min_width) in [
+    let button_style = demo_button_style(&ui);
+    for (label, class, template, radius, padding, min_width) in [
         (
             "Launch workspace",
-            primary_button_style(&ui),
+            PRIMARY_BUTTON,
             overstory::button_template(),
             14.0,
             kurbo::Insets::new(30.0, 15.0, 30.0, 17.0),
@@ -537,7 +533,7 @@ fn build_ui() -> Ui {
         ),
         (
             "Inspect layout",
-            surface_button_style(&ui),
+            SURFACE_BUTTON,
             ring_button_template(),
             10.0,
             kurbo::Insets::new(28.0, 14.0, 28.0, 16.0),
@@ -545,7 +541,7 @@ fn build_ui() -> Ui {
         ),
         (
             "Resolve alerts",
-            alert_button_style(&ui),
+            ALERT_BUTTON,
             framed_button_template(),
             5.0,
             kurbo::Insets::new(24.0, 12.0, 24.0, 14.0),
@@ -555,167 +551,130 @@ fn build_ui() -> Ui {
         ui.append_spec(
             panel,
             compose::button(label)
+                .class(class)
                 .set(props.padding, padding)
                 .set(props.min_width, min_width)
                 .set(props.corner_radius, radius)
                 .template(template)
-                .style(style),
+                .style(button_style.clone()),
         );
     }
 
     ui
 }
 
-fn row_style(ui: &Ui) -> understory_style::StyleCascade {
+fn demo_button_style(ui: &Ui) -> understory_style::StyleCascade {
     let props = ui.properties();
     let base = StyleBuilder::new()
-        .set(props.background, None::<Brush>)
-        .build();
-    StyleCascadeBuilder::new()
-        .push_style(StyleOrigin::Base, base)
-        .build()
-}
-
-fn toggle_style(ui: &Ui) -> understory_style::StyleCascade {
-    let props = ui.properties();
-    let base = StyleBuilder::new()
-        .set(
-            props.foreground,
-            Some(Brush::from(PaintColor::from_rgb8(0xf8, 0xfa, 0xfc))),
-        )
-        .build();
-    let content = StyleBuilder::new()
-        .set(
-            props.foreground,
-            Some(Brush::from(PaintColor::from_rgb8(0xdc, 0xe4, 0xee))),
-        )
-        .build();
-    let track = StyleBuilder::new()
         .set(
             props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0x27, 0x2d, 0x36))),
+            Some(Brush::from(PaintColor::from_rgb8(0x2f, 0x36, 0x42))),
         )
         .set(
             props.foreground,
-            Some(Brush::from(PaintColor::from_rgb8(0x72, 0xdb, 0x9e))),
+            Some(Brush::from(PaintColor::from_rgb8(0xf5, 0xf7, 0xfa))),
         )
         .set(
             props.border,
-            Some(Brush::from(PaintColor::from_rgb8(0x47, 0x55, 0x65))),
+            Some(Brush::from(PaintColor::from_rgb8(0x52, 0x61, 0x73))),
         )
         .set(props.border_width, 1.0)
-        .set(props.corner_radius, 12.0)
         .build();
-    let thumb = StyleBuilder::new()
+    let hover = StyleBuilder::new()
         .set(
             props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0xd9, 0xe1, 0xea))),
-        )
-        .set(props.corner_radius, 9.0)
-        .build();
-    let track_hover = StyleBuilder::new()
-        .set(
-            props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0x31, 0x39, 0x45))),
+            Some(Brush::from(PaintColor::from_rgb8(0x39, 0x43, 0x51))),
         )
         .build();
-    let track_pressed = StyleBuilder::new()
+    let pressed = StyleBuilder::new()
         .set(
             props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0x1d, 0x23, 0x2b))),
+            Some(Brush::from(PaintColor::from_rgb8(0x22, 0x28, 0x31))),
         )
         .build();
-    let track_checked = StyleBuilder::new()
+
+    let primary = StyleBuilder::new()
         .set(
             props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0x5a, 0xc8, 0x87))),
+            Some(Brush::from(PaintColor::from_rgb8(0x2f, 0x6f, 0xed))),
+        )
+        .set(
+            props.foreground,
+            Some(Brush::from(PaintColor::from_rgb8(0xff, 0xff, 0xff))),
         )
         .set(
             props.border,
-            Some(Brush::from(PaintColor::from_rgb8(0x8d, 0xef, 0xb2))),
+            Some(Brush::from(PaintColor::from_rgb8(0x86, 0xaa, 0xff))),
         )
         .build();
-    let thumb_checked = StyleBuilder::new()
+    let primary_hover = StyleBuilder::new()
         .set(
             props.background,
-            Some(Brush::from(PaintColor::from_rgb8(0x13, 0x24, 0x1a))),
+            Some(Brush::from(PaintColor::from_rgb8(0x3f, 0x7f, 0xf3))),
         )
         .build();
-    StyleCascadeBuilder::new()
-        .push_style(StyleOrigin::Base, base)
-        .push_rules(
-            StyleOrigin::Sheet,
-            [
-                (overstory::style::toggle_content(), content),
-                (overstory::style::toggle_track(), track),
-                (overstory::style::toggle_thumb(), thumb),
-                (overstory::style::toggle_track_when(HOVERED), track_hover),
-                (overstory::style::toggle_track_when(PRESSED), track_pressed),
-                (overstory::style::toggle_track_when(CHECKED), track_checked),
-                (overstory::style::toggle_thumb_when(CHECKED), thumb_checked),
-            ],
+    let primary_pressed = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0x24, 0x55, 0xb8))),
         )
-        .build()
-}
-
-fn primary_button_style(ui: &Ui) -> understory_style::StyleCascade {
-    button_style(
-        ui,
-        PaintColor::from_rgb8(0x2f, 0x6f, 0xed),
-        PaintColor::from_rgb8(0xff, 0xff, 0xff),
-        Some(PaintColor::from_rgb8(0x86, 0xaa, 0xff)),
-        1.0,
-        PaintColor::from_rgb8(0x3f, 0x7f, 0xf3),
-        PaintColor::from_rgb8(0x24, 0x55, 0xb8),
-    )
-}
-
-fn surface_button_style(ui: &Ui) -> understory_style::StyleCascade {
-    button_style(
-        ui,
-        PaintColor::from_rgb8(0xf7, 0xf1, 0xe6),
-        PaintColor::from_rgb8(0x20, 0x24, 0x28),
-        Some(PaintColor::from_rgb8(0xd6, 0xb6, 0x65)),
-        1.0,
-        PaintColor::from_rgb8(0xff, 0xf8, 0xdf),
-        PaintColor::from_rgb8(0xe8, 0xd4, 0x96),
-    )
-}
-
-fn alert_button_style(ui: &Ui) -> understory_style::StyleCascade {
-    button_style(
-        ui,
-        PaintColor::from_rgb8(0x3d, 0x1f, 0x2d),
-        PaintColor::from_rgb8(0xff, 0xef, 0xf5),
-        Some(PaintColor::from_rgb8(0xe4, 0x57, 0x7d)),
-        2.0,
-        PaintColor::from_rgb8(0x4e, 0x27, 0x39),
-        PaintColor::from_rgb8(0x2c, 0x17, 0x22),
-    )
-}
-
-fn button_style(
-    ui: &Ui,
-    base_background: PaintColor,
-    foreground: PaintColor,
-    border: Option<PaintColor>,
-    border_width: f64,
-    hover_background: PaintColor,
-    pressed_background: PaintColor,
-) -> understory_style::StyleCascade {
-    let props = ui.properties();
-    let base = StyleBuilder::new()
-        .set(props.background, Some(Brush::from(base_background)))
-        .set(props.foreground, Some(Brush::from(foreground)))
-        .set(props.border, border.map(Brush::from))
-        .set(props.border_width, border_width)
         .build();
-    let hover = StyleBuilder::new()
-        .set(props.background, Some(Brush::from(hover_background)))
+
+    let surface = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0xf7, 0xf1, 0xe6))),
+        )
+        .set(
+            props.foreground,
+            Some(Brush::from(PaintColor::from_rgb8(0x20, 0x24, 0x28))),
+        )
+        .set(
+            props.border,
+            Some(Brush::from(PaintColor::from_rgb8(0xd6, 0xb6, 0x65))),
+        )
         .build();
-    let pressed = StyleBuilder::new()
-        .set(props.background, Some(Brush::from(pressed_background)))
+    let surface_hover = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0xff, 0xf8, 0xdf))),
+        )
         .build();
+    let surface_pressed = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0xe8, 0xd4, 0x96))),
+        )
+        .build();
+
+    let alert = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0x3d, 0x1f, 0x2d))),
+        )
+        .set(
+            props.foreground,
+            Some(Brush::from(PaintColor::from_rgb8(0xff, 0xef, 0xf5))),
+        )
+        .set(
+            props.border,
+            Some(Brush::from(PaintColor::from_rgb8(0xe4, 0x57, 0x7d))),
+        )
+        .set(props.border_width, 2.0)
+        .build();
+    let alert_hover = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0x4e, 0x27, 0x39))),
+        )
+        .build();
+    let alert_pressed = StyleBuilder::new()
+        .set(
+            props.background,
+            Some(Brush::from(PaintColor::from_rgb8(0x2c, 0x17, 0x22))),
+        )
+        .build();
+
     StyleCascadeBuilder::new()
         .push_style(StyleOrigin::Base, base)
         .push_rules(
@@ -723,6 +682,39 @@ fn button_style(
             [
                 (overstory::style::button_hovered(), hover),
                 (overstory::style::button_pressed(), pressed),
+                (
+                    overstory::style::button().with_class(PRIMARY_BUTTON),
+                    primary,
+                ),
+                (
+                    overstory::style::button_when(HOVERED).with_class(PRIMARY_BUTTON),
+                    primary_hover,
+                ),
+                (
+                    overstory::style::button_when(PRESSED).with_class(PRIMARY_BUTTON),
+                    primary_pressed,
+                ),
+                (
+                    overstory::style::button().with_class(SURFACE_BUTTON),
+                    surface,
+                ),
+                (
+                    overstory::style::button_when(HOVERED).with_class(SURFACE_BUTTON),
+                    surface_hover,
+                ),
+                (
+                    overstory::style::button_when(PRESSED).with_class(SURFACE_BUTTON),
+                    surface_pressed,
+                ),
+                (overstory::style::button().with_class(ALERT_BUTTON), alert),
+                (
+                    overstory::style::button_when(HOVERED).with_class(ALERT_BUTTON),
+                    alert_hover,
+                ),
+                (
+                    overstory::style::button_when(PRESSED).with_class(ALERT_BUTTON),
+                    alert_pressed,
+                ),
             ],
         )
         .build()
