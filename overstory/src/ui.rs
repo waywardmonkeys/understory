@@ -21,15 +21,17 @@ use understory_event_state::{
     click::{ClickResult, ClickState},
     hover::{HoverEvent, HoverState},
 };
-use understory_property::{DependencyObject, DependencyObjectExt, Property, PropertyRegistry};
+use understory_property::{
+    DependencyObject, DependencyObjectExt, Property, PropertyMetadata, PropertyRegistry,
+};
 use understory_responder::{
     dispatcher,
     router::{Router, path_from_dispatch},
     types::{DepthKey, Dispatch, Localizer, Outcome, Phase, ResolvedHitRef, WidgetLookup},
 };
 use understory_style::{
-    ClassId, MatchState, PartTag, ResolveCx, SelectorInputs, SelectorInputsOwned, StyleCascade,
-    Theme, ThemeBuilder,
+    ClassId, MatchState, PartTag, PseudoClassId, ResolveCx, SelectorInputs, SelectorInputsOwned,
+    StyleCascade, Theme, ThemeBuilder,
 };
 
 use crate::element::{Element, RetainedStyleSubject};
@@ -149,7 +151,7 @@ impl<'a> TemplateValueResolver<'a> {
         ui: &'a Ui,
         element: ElementId,
         content: Option<TextContent>,
-        extra_pseudos: &[understory_style::PseudoClassId],
+        extra_pseudos: &[PseudoClassId],
     ) -> Self {
         let owner_state = if extra_pseudos.is_empty() {
             ui.element(element)
@@ -366,6 +368,27 @@ impl Ui {
     #[must_use]
     pub const fn registry(&self) -> &PropertyRegistry {
         &self.registry
+    }
+
+    /// Registers an application-defined dependency property for this UI.
+    ///
+    /// The returned typed property handle can be used with [`Ui::set_local`],
+    /// [`Ui::resolve`], [`understory_style::StyleBuilder::set`], and
+    /// [`crate::compose::WidgetSpec::set`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a property with `name` is already registered, or if the
+    /// underlying property registry has reached its capacity.
+    pub fn register_property<T>(
+        &mut self,
+        name: &'static str,
+        metadata: PropertyMetadata<T>,
+    ) -> Property<T>
+    where
+        T: Clone + 'static,
+    {
+        self.registry.register(name, metadata)
     }
 
     /// Adds a semantic button under `parent`.
@@ -622,6 +645,45 @@ impl Ui {
         }
     }
 
+    /// Adds an application-defined pseudoclass to an element.
+    ///
+    /// Pseudoclasses represent dynamic state such as selected, expanded, or
+    /// invalid. For durable category labels, prefer [`Ui::add_class`].
+    pub fn add_pseudo(&mut self, id: ElementId, pseudo: PseudoClassId) {
+        self.set_pseudo(id, pseudo, true);
+    }
+
+    /// Removes an application-defined pseudoclass from an element.
+    pub fn remove_pseudo(&mut self, id: ElementId, pseudo: PseudoClassId) {
+        self.set_pseudo(id, pseudo, false);
+    }
+
+    /// Sets whether an application-defined pseudoclass is present on an element.
+    pub fn set_pseudo(&mut self, id: ElementId, pseudo: PseudoClassId, active: bool) {
+        let pseudos = &mut self.element_mut(id).custom_pseudos;
+        let changed = match pseudos.binary_search(&pseudo) {
+            Ok(index) => {
+                if active {
+                    false
+                } else {
+                    pseudos.remove(index);
+                    true
+                }
+            }
+            Err(index) => {
+                if active {
+                    pseudos.insert(index, pseudo);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if changed {
+            self.restyle_or_mark_style(id);
+        }
+    }
+
     /// Assigns a style cascade to an element.
     pub fn set_style(&mut self, id: ElementId, style: StyleCascade) {
         let element = self.element_mut(id);
@@ -786,7 +848,7 @@ impl Ui {
         &self,
         id: ElementId,
         part_tag: Option<PartTag>,
-        extra_pseudos: &[understory_style::PseudoClassId],
+        extra_pseudos: &[PseudoClassId],
         property: Property<T>,
     ) -> T
     where
@@ -810,7 +872,7 @@ impl Ui {
     fn owner_style_state(
         &self,
         id: ElementId,
-        extra_pseudos: &[understory_style::PseudoClassId],
+        extra_pseudos: &[PseudoClassId],
     ) -> Option<MatchState> {
         let element = self.element(id);
         let style = element.style.as_ref()?;
@@ -839,7 +901,7 @@ impl Ui {
     fn owner_selector_inputs(
         &self,
         id: ElementId,
-        extra_pseudos: &[understory_style::PseudoClassId],
+        extra_pseudos: &[PseudoClassId],
     ) -> SelectorInputsOwned {
         let element = self.element(id);
         let pseudos = self.selector_pseudos(element, extra_pseudos);
@@ -1089,7 +1151,7 @@ impl Ui {
         &self,
         element: ElementId,
         content: Option<TextContent>,
-        extra_pseudos: &[understory_style::PseudoClassId],
+        extra_pseudos: &[PseudoClassId],
     ) -> TemplateValueResolver<'_> {
         TemplateValueResolver::new(self, element, content, extra_pseudos)
     }
@@ -1523,9 +1585,10 @@ impl Ui {
     fn selector_pseudos(
         &self,
         element: &Element,
-        extra_pseudos: &[understory_style::PseudoClassId],
-    ) -> Vec<understory_style::PseudoClassId> {
+        extra_pseudos: &[PseudoClassId],
+    ) -> Vec<PseudoClassId> {
         let mut pseudos = element.state.pseudos();
+        pseudos.extend_from_slice(&element.custom_pseudos);
         if let Some(widget) = element.widget.as_deref() {
             widget.append_selector_pseudos(&mut pseudos);
         }
@@ -2633,6 +2696,44 @@ mod tests {
         ui.set_hovered(id, true);
         assert_eq!(ui.resolve(id, props.background), Some(hover));
         assert!(ui.is_invalidated(id, VISUAL));
+    }
+
+    #[test]
+    fn custom_properties_and_pseudos_resolve_through_style_cascade() {
+        use understory_property::PropertyMetadataBuilder;
+        use understory_style::{PseudoClassId, StyleBuilder, StyleCascadeBuilder, StyleOrigin};
+
+        const SELECTED: PseudoClassId = PseudoClassId(44);
+
+        let mut ui = Ui::new();
+        let id = ui.add_button(ui.root(), "Save");
+        let emphasis = ui.register_property(
+            "Demo.Emphasis",
+            PropertyMetadataBuilder::new(0.0_f64)
+                .affects_channels(VISUAL.into_set())
+                .build(),
+        );
+        let selected_hover = StyleBuilder::new().set(emphasis, 0.75).build();
+        let cascade = StyleCascadeBuilder::new()
+            .push_rule(
+                StyleOrigin::Sheet,
+                crate::style::button().with_pseudos([crate::HOVERED, SELECTED]),
+                selected_hover,
+            )
+            .build();
+
+        ui.set_style(id, cascade);
+        assert_eq!(ui.resolve(id, emphasis), 0.0);
+
+        ui.add_pseudo(id, SELECTED);
+        assert_eq!(ui.resolve(id, emphasis), 0.0);
+
+        ui.set_hovered(id, true);
+        assert_eq!(ui.resolve(id, emphasis), 0.75);
+        assert!(ui.is_invalidated(id, VISUAL));
+
+        ui.remove_pseudo(id, SELECTED);
+        assert_eq!(ui.resolve(id, emphasis), 0.0);
     }
 
     #[test]
