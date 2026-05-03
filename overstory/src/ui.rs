@@ -9,6 +9,7 @@ use imaging::record;
 use invalidation::{ChannelSet, EagerPolicy, InvalidationTracker};
 use kurbo::{Insets, Point, Rect, Size};
 use peniko::Brush;
+use ui_events::keyboard::KeyboardEvent;
 use ui_events::pointer::{
     PointerButton, PointerButtonEvent, PointerEvent, PointerInfo, PointerUpdate,
 };
@@ -37,7 +38,7 @@ use crate::{
     ARRANGE, Button, ElementId, ElementKind, ElementState, MEASURE, Panel, PresentationNode,
     PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE, TemplateSlot, TextBlock,
     TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
-    widget::{PointerEventCx, Widget},
+    widget::{KeyboardEventCx, PointerEventCx, Widget},
 };
 
 /// Retained semantic UI runtime.
@@ -55,6 +56,7 @@ pub struct Ui {
     hover: HoverState<ElementId>,
     clicks: ClickState<ElementId>,
     pressed: Option<ElementId>,
+    focused: Option<ElementId>,
     responder: ResponderState,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
@@ -331,6 +333,7 @@ impl Ui {
             hover: HoverState::new(),
             clicks: ClickState::new(),
             pressed: None,
+            focused: None,
             responder: ResponderState::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
@@ -481,6 +484,25 @@ impl Ui {
         self.pressed
     }
 
+    /// Returns the currently focused element.
+    #[must_use]
+    pub const fn focused(&self) -> Option<ElementId> {
+        self.focused
+    }
+
+    /// Sets keyboard focus to `id`.
+    ///
+    /// Returns `true` when focus changed. Disabled elements and elements
+    /// without widgets are ignored for now.
+    pub fn focus(&mut self, id: ElementId) -> bool {
+        if !self.element_focusable(id) || self.focused == Some(id) {
+            return false;
+        }
+        self.focused = Some(id);
+        self.responder.router.set_focus(Some(id));
+        true
+    }
+
     /// Applies one `ui-events` pointer event to retained UI interaction state.
     ///
     /// Returns `true` when the event changed retained state or activated a widget.
@@ -516,6 +538,26 @@ impl Ui {
             | PointerEvent::Scroll(_)
             | PointerEvent::Gesture(_) => false,
         }
+    }
+
+    /// Applies one `ui-events` keyboard event to the focused element.
+    ///
+    /// Returns `true` when the event changed retained state or activated a widget.
+    pub fn keyboard_event(&mut self, event: &KeyboardEvent) -> bool {
+        let Some(focused) = self.focused.filter(|id| self.element_focusable(*id)) else {
+            return false;
+        };
+        let path = self.semantic_path(focused);
+        let router = Router::<ElementId, ElementWidgetLookup>::new(ElementWidgetLookup);
+        let hit = ResolvedHitRef {
+            node: focused,
+            path: Some(&path),
+            depth_key: DepthKey::Z(0),
+            localizer: Localizer::new(),
+            meta: (),
+        };
+        let dispatches = router.handle_with_hits(&[hit]);
+        self.dispatch_keyboard_event(&dispatches, event)
     }
 
     /// Returns the topmost hit-testable element at `point`, rebuilding presentation if needed.
@@ -1162,6 +1204,14 @@ impl Ui {
         self.state(element).is_some_and(ElementState::enabled) && self.widget_hit_testable(element)
     }
 
+    fn element_focusable(&self, element: ElementId) -> bool {
+        self.state(element).is_some_and(ElementState::enabled)
+            && self
+                .elements
+                .get(element.index())
+                .is_some_and(|element| element.widget.is_some())
+    }
+
     fn pointer_move(
         &mut self,
         viewport: Size,
@@ -1195,6 +1245,7 @@ impl Ui {
         let hover_route = self.hover_route_from_hit(hit.as_ref());
         let mut changed = self.apply_hover_route(&hover_route);
         if let Some(target) = hit.as_ref().map(|target| target.element) {
+            changed |= self.focus(target);
             self.clicks.on_down(
                 pointer_id(pointer),
                 Some(primary_button()),
@@ -1292,6 +1343,17 @@ impl Ui {
         PointerRoute { target, dispatches }
     }
 
+    fn semantic_path(&self, target: ElementId) -> Vec<ElementId> {
+        let mut path = Vec::new();
+        let mut current = Some(target);
+        while let Some(id) = current {
+            path.push(id);
+            current = self.elements[id.index()].parent;
+        }
+        path.reverse();
+        path
+    }
+
     fn apply_hover_route(&mut self, route: &PointerRoute) -> bool {
         if route.target.is_some() {
             let path = path_from_dispatch(&route.dispatches);
@@ -1320,6 +1382,29 @@ impl Ui {
             );
             let mut widget = self.take_widget(dispatch.node);
             let outcome = widget.pointer_event(&mut cx, event);
+            self.put_widget(dispatch.node, widget);
+            if cx.activate_requested() {
+                *changed |= self.activate(dispatch.node);
+            }
+            outcome
+        });
+        changed
+    }
+
+    fn dispatch_keyboard_event(
+        &mut self,
+        dispatches: &[ResponderDispatch],
+        event: &KeyboardEvent,
+    ) -> bool {
+        let mut changed = false;
+        dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
+            if self.elements[dispatch.node.index()].widget.is_none() {
+                return Outcome::Continue;
+            }
+
+            let mut cx = KeyboardEventCx::new(dispatch.node, dispatch.phase);
+            let mut widget = self.take_widget(dispatch.node);
+            let outcome = widget.keyboard_event(&mut cx, event);
             self.put_widget(dispatch.node, widget);
             if cx.activate_requested() {
                 *changed |= self.activate(dispatch.node);
@@ -1438,6 +1523,7 @@ mod tests {
     use super::*;
     use alloc::rc::Rc;
     use core::cell::RefCell;
+    use ui_events::keyboard::{Code, Key, KeyboardEvent, NamedKey};
     use ui_events::pointer::{PointerId, PointerInfo, PointerState, PointerType};
 
     #[test]
@@ -1842,6 +1928,29 @@ mod tests {
         assert_eq!(ui.pressed(), None);
         assert!(!ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
         assert_eq!(ui.pointer_route(viewport, outside).target, None);
+    }
+
+    #[test]
+    fn keyboard_event_routes_to_focused_widget() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(240.0, 80.0);
+        let id = ui.add_toggle(ui.root(), "Keyboard");
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::TOGGLE_PART)
+            .map(|node| node.bounds)
+            .expect("toggle should be presented");
+
+        assert!(ui.pointer_event(viewport, &pointer_down(bounds.center())));
+        assert_eq!(ui.focused(), Some(id));
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Named(NamedKey::Enter),
+            Code::Enter,
+        )));
+
+        assert!(ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
     }
 
     fn primary_pointer() -> PointerInfo {

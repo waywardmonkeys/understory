@@ -7,6 +7,7 @@ use alloc::{string::String, vec::Vec};
 use core::any::Any;
 
 use kurbo::{Insets, Rect, Size};
+use ui_events::keyboard::{Key, KeyState, KeyboardEvent, NamedKey};
 use ui_events::pointer::PointerEvent;
 use understory_responder::types::{Outcome, Phase};
 use understory_style::PseudoClassId;
@@ -50,6 +51,14 @@ pub trait Widget: Any + core::fmt::Debug {
     /// `cx` carries Overstory routing context such as responder phase and whether
     /// this target received a recognized click.
     fn pointer_event(&mut self, _cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+        Outcome::Continue
+    }
+
+    /// Handles a routed keyboard event.
+    ///
+    /// The event is the raw `ui-events` keyboard event supplied to [`Ui`](crate::Ui).
+    /// `cx` carries Overstory routing context for the focused element.
+    fn keyboard_event(&mut self, _cx: &mut KeyboardEventCx, _event: &KeyboardEvent) -> Outcome {
         Outcome::Continue
     }
 
@@ -120,6 +129,62 @@ impl PointerEventCx {
 
     pub(crate) const fn activate_requested(&self) -> bool {
         self.activate_requested
+    }
+}
+
+/// Per-widget context for a routed keyboard event.
+#[derive(Clone, Debug)]
+pub struct KeyboardEventCx {
+    element: ElementId,
+    phase: Phase,
+    activate_requested: bool,
+}
+
+impl KeyboardEventCx {
+    pub(crate) const fn new(element: ElementId, phase: Phase) -> Self {
+        Self {
+            element,
+            phase,
+            activate_requested: false,
+        }
+    }
+
+    /// Returns the element currently receiving the event.
+    #[must_use]
+    pub const fn element(&self) -> ElementId {
+        self.element
+    }
+
+    /// Returns the responder phase for this delivery.
+    #[must_use]
+    pub const fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    /// Returns whether this delivery is the target phase.
+    #[must_use]
+    pub const fn is_target(&self) -> bool {
+        matches!(self.phase, Phase::Target)
+    }
+
+    /// Requests primary activation after the widget handler returns.
+    pub fn activate(&mut self) {
+        self.activate_requested = true;
+    }
+
+    pub(crate) const fn activate_requested(&self) -> bool {
+        self.activate_requested
+    }
+}
+
+fn is_keyboard_activation(event: &KeyboardEvent) -> bool {
+    if event.state != KeyState::Down || event.repeat {
+        return false;
+    }
+    match &event.key {
+        Key::Named(NamedKey::Enter) => true,
+        Key::Character(text) => text == " ",
+        _ => false,
     }
 }
 
@@ -210,6 +275,13 @@ impl Widget for Button {
 
     fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
         if cx.is_target() && cx.clicked() {
+            cx.activate();
+        }
+        Outcome::Continue
+    }
+
+    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx, event: &KeyboardEvent) -> Outcome {
+        if cx.is_target() && is_keyboard_activation(event) {
             cx.activate();
         }
         Outcome::Continue
@@ -624,6 +696,13 @@ impl Widget for Toggle {
 
     fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
         if cx.is_target() && cx.clicked() {
+            cx.activate();
+        }
+        Outcome::Continue
+    }
+
+    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx, event: &KeyboardEvent) -> Outcome {
+        if cx.is_target() && is_keyboard_activation(event) {
             cx.activate();
         }
         Outcome::Continue
