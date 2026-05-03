@@ -20,10 +20,9 @@ use imaging_vello_hybrid::wgpu::{
 };
 use kurbo::Size;
 use overstory::{
-    BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART,
-    CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CORNER_RADIUS_PROPERTY, ControlTemplate,
-    FOREGROUND_PROPERTY, HOVERED, PADDING_PROPERTY, PRESSED, TemplateBinding, TemplateNode, Ui,
-    built_in, compose,
+    BORDER_PART_KIND, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART_KIND,
+    CONTENT_PRESENTER_PART_KIND, CORNER_RADIUS_PROPERTY, ControlTemplate, HOVERED, PRESSED,
+    TemplateNode, Ui, built_in, compose, pass,
 };
 use peniko::{Brush, Color as PaintColor};
 use ui_events_winit::{WindowEventReducer, WindowEventTranslation};
@@ -730,69 +729,45 @@ fn demo_button_style(ui: &Ui) -> understory_style::StyleCascade {
 }
 
 fn ring_button_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        BUTTON_PART,
-        [],
-        [TemplateNode::new(
-            BORDER_PART,
-            [
-                TemplateBinding::pass(BACKGROUND_PROPERTY),
-                TemplateBinding::pass(BORDER_PROPERTY),
-                TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                TemplateBinding::pass(PADDING_PROPERTY),
-                TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-            ],
-            [TemplateNode::new(
-                BORDER_PART,
-                [
-                    TemplateBinding::pass(BORDER_PROPERTY),
-                    TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                    TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-                ],
-                [TemplateNode::new(
-                    CONTENT_PRESENTER_PART,
-                    [
-                        TemplateBinding::pass(CONTENT_PROPERTY),
-                        TemplateBinding::pass(FOREGROUND_PROPERTY),
-                    ],
-                    [],
-                )],
-            )
-            .with_inset(3.0)],
-        )],
-    ))
+    ControlTemplate::new(
+        TemplateNode::group(BUTTON_PART_KIND).with_child(
+            TemplateNode::surface(BORDER_PART_KIND)
+                .with_default_bindings()
+                .with_child(
+                    TemplateNode::surface(BORDER_PART_KIND)
+                        .with_bindings([
+                            pass(BORDER_PROPERTY),
+                            pass(BORDER_WIDTH_PROPERTY),
+                            pass(CORNER_RADIUS_PROPERTY),
+                        ])
+                        .with_child(
+                            TemplateNode::text(CONTENT_PRESENTER_PART_KIND).with_default_bindings(),
+                        )
+                        .with_inset(3.0),
+                ),
+        ),
+    )
 }
 
 fn framed_button_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        BUTTON_PART,
-        [],
-        [TemplateNode::new(
-            BORDER_PART,
-            [
-                TemplateBinding::pass(BACKGROUND_PROPERTY),
-                TemplateBinding::pass(BORDER_PROPERTY),
-                TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                TemplateBinding::pass(PADDING_PROPERTY),
-            ],
-            [TemplateNode::new(
-                BORDER_PART,
-                [
-                    TemplateBinding::pass(BORDER_PROPERTY),
-                    TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                ],
-                [TemplateNode::new(
-                    CONTENT_PRESENTER_PART,
-                    [
-                        TemplateBinding::pass(CONTENT_PROPERTY),
-                        TemplateBinding::pass(FOREGROUND_PROPERTY),
-                    ],
-                    [],
-                )],
-            )
-            .with_inset(4.0)],
-        )],
-    ))
+    ControlTemplate::new(
+        TemplateNode::group(BUTTON_PART_KIND).with_child(
+            TemplateNode::surface(BORDER_PART_KIND)
+                .with_bindings([
+                    pass(BORDER_PROPERTY),
+                    pass(BORDER_WIDTH_PROPERTY),
+                    pass(CORNER_RADIUS_PROPERTY),
+                ])
+                .with_child(
+                    TemplateNode::surface(BORDER_PART_KIND)
+                        .with_bindings([pass(BORDER_PROPERTY), pass(BORDER_WIDTH_PROPERTY)])
+                        .with_child(
+                            TemplateNode::text(CONTENT_PRESENTER_PART_KIND).with_default_bindings(),
+                        )
+                        .with_inset(4.0),
+                ),
+        ),
+    )
 }
 
 fn checked_u16(value: u32) -> u16 {

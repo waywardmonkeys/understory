@@ -138,43 +138,59 @@ impl PresentationNode {
     }
 
     pub(crate) fn surface_primitive_mut(&mut self) -> &mut SurfacePrimitive {
-        if let Some(index) = self
-            .primitives
+        let index = self.surface_primitive_index().unwrap_or_else(|| {
+            self.primitives
+                .push(PresentationPrimitive::Surface(SurfacePrimitive::default()));
+            self.primitives.len() - 1
+        });
+        self.surface_primitive_mut_at(index)
+    }
+
+    pub(crate) fn surface_primitive_mut_if_present(&mut self) -> Option<&mut SurfacePrimitive> {
+        let index = self.surface_primitive_index()?;
+        Some(self.surface_primitive_mut_at(index))
+    }
+
+    pub(crate) fn text_primitive_mut(&mut self) -> &mut TextPrimitive {
+        let index = self.text_primitive_index().unwrap_or_else(|| {
+            self.primitives
+                .push(PresentationPrimitive::Text(TextPrimitive {
+                    content: TextContent::default(),
+                    foreground: None,
+                    style: TextStyle::default(),
+                }));
+            self.primitives.len() - 1
+        });
+        self.text_primitive_mut_at(index)
+    }
+
+    pub(crate) fn text_primitive_mut_if_present(&mut self) -> Option<&mut TextPrimitive> {
+        let index = self.text_primitive_index()?;
+        Some(self.text_primitive_mut_at(index))
+    }
+
+    fn surface_primitive_index(&self) -> Option<usize> {
+        self.primitives
             .iter()
             .position(|primitive| matches!(primitive, PresentationPrimitive::Surface(_)))
-        {
-            let PresentationPrimitive::Surface(surface) = &mut self.primitives[index] else {
-                unreachable!("matched surface primitive");
-            };
-            return surface;
-        }
-        self.primitives
-            .push(PresentationPrimitive::Surface(SurfacePrimitive::default()));
-        let Some(PresentationPrimitive::Surface(surface)) = self.primitives.last_mut() else {
-            unreachable!("just pushed surface primitive");
+    }
+
+    fn surface_primitive_mut_at(&mut self, index: usize) -> &mut SurfacePrimitive {
+        let PresentationPrimitive::Surface(surface) = &mut self.primitives[index] else {
+            unreachable!("matched surface primitive");
         };
         surface
     }
 
-    pub(crate) fn text_primitive_mut(&mut self) -> &mut TextPrimitive {
-        if let Some(index) = self
-            .primitives
+    fn text_primitive_index(&self) -> Option<usize> {
+        self.primitives
             .iter()
             .position(|primitive| matches!(primitive, PresentationPrimitive::Text(_)))
-        {
-            let PresentationPrimitive::Text(text) = &mut self.primitives[index] else {
-                unreachable!("matched text primitive");
-            };
-            return text;
-        }
-        self.primitives
-            .push(PresentationPrimitive::Text(TextPrimitive {
-                content: TextContent::default(),
-                foreground: None,
-                style: TextStyle::default(),
-            }));
-        let Some(PresentationPrimitive::Text(text)) = self.primitives.last_mut() else {
-            unreachable!("just pushed text primitive");
+    }
+
+    fn text_primitive_mut_at(&mut self, index: usize) -> &mut TextPrimitive {
+        let PresentationPrimitive::Text(text) = &mut self.primitives[index] else {
+            unreachable!("matched text primitive");
         };
         text
     }

@@ -16,9 +16,9 @@ use understory_style::PseudoClassId;
 use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerQueue, TimerRepeat};
 
 use crate::{
-    ElementId, ElementKind, PresentationNode, PresentationNodeId, PresentationTree, ROW_PART,
-    SurfacePrimitive, TEXT_CARET_PART, TEXT_SELECTION_PART, TOGGLE_THUMB_SLOT, TOGGLE_TRACK_SLOT,
-    TemplateLayout, TemplateSlotLayout, TextContent, TextSystem, Ui,
+    ElementId, ElementKind, PresentationNode, PresentationNodeId, PresentationTree, ROW_PART_KIND,
+    SurfacePrimitive, TEXT_CARET_PART_KIND, TEXT_SELECTION_PART_KIND, TOGGLE_THUMB_SLOT,
+    TOGGLE_TRACK_SLOT, TemplateLayout, TemplateSlotLayout, TextContent, TextSystem, Ui,
 };
 
 const TEXT_INPUT_BLINK_INTERVAL: TimerDuration = 500_000_000;
@@ -790,7 +790,7 @@ impl Widget for TextInput {
         for selection in &self.cached_selection_rects {
             let mut node = PresentationNode::new(
                 element,
-                TEXT_SELECTION_PART,
+                TEXT_SELECTION_PART_KIND,
                 *selection + content_bounds.origin().to_vec2(),
             );
             node.surface_primitive_mut().background = Some(selection_brush.clone());
@@ -802,7 +802,7 @@ impl Widget for TextInput {
         {
             let mut node = PresentationNode::new(
                 element,
-                TEXT_CARET_PART,
+                TEXT_CARET_PART_KIND,
                 cursor + content_bounds.origin().to_vec2(),
             );
             node.surface_primitive_mut().background =
@@ -1100,7 +1100,7 @@ impl Widget for Row {
         let props = ui.properties();
         let node = PresentationNode::surface(
             element,
-            ROW_PART,
+            ROW_PART_KIND,
             bounds,
             SurfacePrimitive {
                 background: ui.resolve::<Option<peniko::Brush>>(element, props.background),

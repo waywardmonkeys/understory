@@ -35,40 +35,40 @@ impl PartKind {
 }
 
 /// Root presentation part kind.
-pub const ROOT_PART: PartKind = PartKind::new("root");
+pub const ROOT_PART_KIND: PartKind = PartKind::new("root");
 
 /// Built-in button presentation part kind.
-pub const BUTTON_PART: PartKind = PartKind::new("button");
+pub const BUTTON_PART_KIND: PartKind = PartKind::new("button");
 
 /// Generic border/chrome presentation part kind.
-pub const BORDER_PART: PartKind = PartKind::new("border");
+pub const BORDER_PART_KIND: PartKind = PartKind::new("border");
 
 /// Generic content presenter presentation part kind.
-pub const CONTENT_PRESENTER_PART: PartKind = PartKind::new("content-presenter");
+pub const CONTENT_PRESENTER_PART_KIND: PartKind = PartKind::new("content-presenter");
 
 /// Built-in text block presentation part kind.
-pub const TEXT_BLOCK_PART: PartKind = PartKind::new("text-block");
+pub const TEXT_BLOCK_PART_KIND: PartKind = PartKind::new("text-block");
 
 /// Built-in text input presentation part kind.
-pub const TEXT_INPUT_PART: PartKind = PartKind::new("text-input");
+pub const TEXT_INPUT_PART_KIND: PartKind = PartKind::new("text-input");
 
 /// Built-in text selection highlight presentation part kind.
-pub const TEXT_SELECTION_PART: PartKind = PartKind::new("text-selection");
+pub const TEXT_SELECTION_PART_KIND: PartKind = PartKind::new("text-selection");
 
 /// Built-in text caret presentation part kind.
-pub const TEXT_CARET_PART: PartKind = PartKind::new("text-caret");
+pub const TEXT_CARET_PART_KIND: PartKind = PartKind::new("text-caret");
 
 /// Built-in row presentation part kind.
-pub const ROW_PART: PartKind = PartKind::new("row");
+pub const ROW_PART_KIND: PartKind = PartKind::new("row");
 
 /// Built-in toggle presentation part kind.
-pub const TOGGLE_PART: PartKind = PartKind::new("toggle");
+pub const TOGGLE_PART_KIND: PartKind = PartKind::new("toggle");
 
 /// Built-in toggle track presentation part kind.
-pub const TOGGLE_TRACK_PART: PartKind = PartKind::new("toggle-track");
+pub const TOGGLE_TRACK_PART_KIND: PartKind = PartKind::new("toggle-track");
 
 /// Built-in toggle thumb presentation part kind.
-pub const TOGGLE_THUMB_PART: PartKind = PartKind::new("toggle-thumb");
+pub const TOGGLE_THUMB_PART_KIND: PartKind = PartKind::new("toggle-thumb");
 
 /// Open identifier for a semantic template slot.
 ///
@@ -173,6 +173,17 @@ pub const CORNER_RADIUS_PROPERTY: TemplateProperty = TemplateProperty::new("corn
 /// Bindable content property.
 pub const CONTENT_PROPERTY: TemplateProperty = TemplateProperty::new("content");
 
+/// Presentation primitive emitted by a template node before bindings are applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplatePrimitive {
+    /// A structural node that groups children but emits no visual primitive itself.
+    Group,
+    /// A rectangular fill/stroke surface.
+    Surface,
+    /// A text run shaped from template content and text style properties.
+    Text,
+}
+
 /// A binding from the templated control to a template part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TemplateBinding {
@@ -199,11 +210,39 @@ impl TemplateBinding {
     }
 }
 
+/// Creates a binding that passes one property through unchanged.
+#[must_use]
+pub const fn pass(property: TemplateProperty) -> TemplateBinding {
+    TemplateBinding::pass(property)
+}
+
+/// Starts a binding expression for the target template property.
+#[must_use]
+pub const fn bind(target: TemplateProperty) -> TemplateBindingTarget {
+    TemplateBindingTarget { target }
+}
+
+/// Intermediate binding expression that still needs a source property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemplateBindingTarget {
+    target: TemplateProperty,
+}
+
+impl TemplateBindingTarget {
+    /// Completes this binding by reading from `source`.
+    #[must_use]
+    pub const fn from(self, source: TemplateProperty) -> TemplateBinding {
+        TemplateBinding::new(self.target, source)
+    }
+}
+
 /// A node in a control template.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TemplateNode {
     /// Presentation part kind created by this template node.
     pub kind: PartKind,
+    /// Presentation primitive emitted by this template node.
+    pub primitive: TemplatePrimitive,
     /// Semantic slot this node reads bounds and bound values from.
     pub slot: TemplateSlot,
     /// Amount by which this node's bounds are inset from the semantic control bounds.
@@ -215,26 +254,91 @@ pub struct TemplateNode {
 }
 
 impl TemplateNode {
-    /// Creates a template node.
+    /// Creates a structural template node.
     #[must_use]
-    pub fn new(
-        kind: PartKind,
-        bindings: impl Into<Box<[TemplateBinding]>>,
-        children: impl Into<Box<[Self]>>,
-    ) -> Self {
+    pub fn new(kind: PartKind) -> Self {
         Self {
             kind,
+            primitive: TemplatePrimitive::Group,
             slot: default_slot_for_part(kind),
             inset: 0.0,
-            bindings: bindings.into(),
-            children: children.into(),
+            bindings: Box::from([]),
+            children: Box::from([]),
         }
+    }
+
+    /// Creates a structural template node.
+    #[must_use]
+    pub fn group(kind: PartKind) -> Self {
+        Self::new(kind)
+    }
+
+    /// Creates a template node that emits a surface primitive.
+    #[must_use]
+    pub fn surface(kind: PartKind) -> Self {
+        Self::new(kind).with_primitive(TemplatePrimitive::Surface)
+    }
+
+    /// Creates a template node that emits a text primitive.
+    #[must_use]
+    pub fn text(kind: PartKind) -> Self {
+        Self::new(kind).with_primitive(TemplatePrimitive::Text)
+    }
+
+    /// Returns this template node with a different primitive kind.
+    #[must_use]
+    pub const fn with_primitive(mut self, primitive: TemplatePrimitive) -> Self {
+        self.primitive = primitive;
+        self
     }
 
     /// Returns this template node assigned to `slot`.
     #[must_use]
     pub const fn with_slot(mut self, slot: TemplateSlot) -> Self {
         self.slot = slot;
+        self
+    }
+
+    /// Returns this template node with property bindings.
+    #[must_use]
+    pub fn with_bindings(mut self, bindings: impl Into<Box<[TemplateBinding]>>) -> Self {
+        self.bindings = bindings.into();
+        self
+    }
+
+    /// Returns this template node with bindings appropriate for its primitive.
+    ///
+    /// Group nodes receive no bindings. Surface nodes receive visual surface
+    /// bindings for background, border, border width, and corner radius. Text
+    /// nodes receive content and foreground bindings.
+    #[must_use]
+    pub fn with_default_bindings(mut self) -> Self {
+        self.bindings = match self.primitive {
+            TemplatePrimitive::Group => Box::from([]),
+            TemplatePrimitive::Surface => Box::from([
+                pass(BACKGROUND_PROPERTY),
+                pass(BORDER_PROPERTY),
+                pass(BORDER_WIDTH_PROPERTY),
+                pass(CORNER_RADIUS_PROPERTY),
+            ]),
+            TemplatePrimitive::Text => {
+                Box::from([pass(CONTENT_PROPERTY), pass(FOREGROUND_PROPERTY)])
+            }
+        };
+        self
+    }
+
+    /// Returns this template node with child template nodes.
+    #[must_use]
+    pub fn with_children(mut self, children: impl Into<Box<[Self]>>) -> Self {
+        self.children = children.into();
+        self
+    }
+
+    /// Returns this template node with one child template node.
+    #[must_use]
+    pub fn with_child(mut self, child: Self) -> Self {
+        self.children = Box::from([child]);
         self
     }
 
@@ -269,112 +373,63 @@ impl ControlTemplate {
 /// Returns the built-in button control template.
 #[must_use]
 pub fn button_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        BUTTON_PART,
-        [],
-        [TemplateNode::new(
-            BORDER_PART,
-            [
-                TemplateBinding::pass(BACKGROUND_PROPERTY),
-                TemplateBinding::pass(BORDER_PROPERTY),
-                TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                TemplateBinding::pass(PADDING_PROPERTY),
-                TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-            ],
-            [TemplateNode::new(
-                CONTENT_PRESENTER_PART,
-                [
-                    TemplateBinding::pass(CONTENT_PROPERTY),
-                    TemplateBinding::pass(FOREGROUND_PROPERTY),
-                ],
-                [],
-            )],
-        )],
-    ))
+    ControlTemplate::new(
+        TemplateNode::group(BUTTON_PART_KIND).with_child(
+            TemplateNode::surface(BORDER_PART_KIND)
+                .with_default_bindings()
+                .with_child(
+                    TemplateNode::text(CONTENT_PRESENTER_PART_KIND).with_default_bindings(),
+                ),
+        ),
+    )
 }
 
 /// Returns the built-in text block control template.
 #[must_use]
 pub fn text_block_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        TEXT_BLOCK_PART,
-        [
-            TemplateBinding::pass(BACKGROUND_PROPERTY),
-            TemplateBinding::pass(BORDER_PROPERTY),
-            TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-            TemplateBinding::pass(PADDING_PROPERTY),
-            TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-        ],
-        [TemplateNode::new(
-            CONTENT_PRESENTER_PART,
-            [
-                TemplateBinding::pass(CONTENT_PROPERTY),
-                TemplateBinding::pass(FOREGROUND_PROPERTY),
-            ],
-            [],
-        )],
-    ))
+    ControlTemplate::new(
+        TemplateNode::surface(TEXT_BLOCK_PART_KIND)
+            .with_default_bindings()
+            .with_child(
+                TemplateNode::text(CONTENT_PRESENTER_PART_KIND)
+                    .with_default_bindings()
+                    .with_parent_bounds()
+                    .with_property_inset(PADDING_PROPERTY),
+            ),
+    )
 }
 
 /// Returns the built-in text input control template.
 #[must_use]
 pub fn text_input_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        TEXT_INPUT_PART,
-        [
-            TemplateBinding::pass(BACKGROUND_PROPERTY),
-            TemplateBinding::pass(BORDER_PROPERTY),
-            TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-            TemplateBinding::pass(PADDING_PROPERTY),
-            TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-        ],
-        [TemplateNode::new(
-            CONTENT_PRESENTER_PART,
-            [
-                TemplateBinding::pass(CONTENT_PROPERTY),
-                TemplateBinding::pass(FOREGROUND_PROPERTY),
-            ],
-            [],
-        )],
-    ))
+    ControlTemplate::new(
+        TemplateNode::surface(TEXT_INPUT_PART_KIND)
+            .with_default_bindings()
+            .with_child(
+                TemplateNode::text(CONTENT_PRESENTER_PART_KIND)
+                    .with_default_bindings()
+                    .with_parent_bounds()
+                    .with_property_inset(PADDING_PROPERTY),
+            ),
+    )
 }
 
 /// Returns the built-in toggle control template.
 #[must_use]
 pub fn toggle_template() -> ControlTemplate {
-    ControlTemplate::new(TemplateNode::new(
-        TOGGLE_PART,
-        [],
-        [
-            TemplateNode::new(
-                TOGGLE_TRACK_PART,
-                [
-                    TemplateBinding::pass(BACKGROUND_PROPERTY),
-                    TemplateBinding::pass(BORDER_PROPERTY),
-                    TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
-                    TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-                ],
-                [TemplateNode::new(
-                    TOGGLE_THUMB_PART,
-                    [
-                        TemplateBinding::pass(BACKGROUND_PROPERTY),
-                        TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
-                    ],
-                    [],
+    ControlTemplate::new(
+        TemplateNode::group(TOGGLE_PART_KIND).with_children([
+            TemplateNode::surface(TOGGLE_TRACK_PART_KIND)
+                .with_default_bindings()
+                .with_child(
+                    TemplateNode::surface(TOGGLE_THUMB_PART_KIND)
+                        .with_default_bindings()
+                        .with_slot(TOGGLE_THUMB_SLOT),
                 )
-                .with_slot(TOGGLE_THUMB_SLOT)],
-            )
-            .with_slot(TOGGLE_TRACK_SLOT),
-            TemplateNode::new(
-                CONTENT_PRESENTER_PART,
-                [
-                    TemplateBinding::pass(CONTENT_PROPERTY),
-                    TemplateBinding::pass(FOREGROUND_PROPERTY),
-                ],
-                [],
-            ),
-        ],
-    ))
+                .with_slot(TOGGLE_TRACK_SLOT),
+            TemplateNode::text(CONTENT_PRESENTER_PART_KIND).with_default_bindings(),
+        ]),
+    )
 }
 
 /// Arranged bounds for one semantic template slot.
@@ -476,6 +531,15 @@ fn instantiate_template_node(
     data.enter_slot(template.slot);
     let bounds = layout.bounds_for(template.slot).inset(-template.inset);
     let mut node = PresentationNode::new(source, template.kind, bounds);
+    match template.primitive {
+        TemplatePrimitive::Group => {}
+        TemplatePrimitive::Surface => {
+            node.surface_primitive_mut();
+        }
+        TemplatePrimitive::Text => {
+            node.text_primitive_mut();
+        }
+    }
     for binding in template.bindings.iter().copied() {
         data.apply(&mut node, template.slot, binding);
     }
@@ -489,7 +553,7 @@ fn instantiate_template_node(
 }
 
 fn default_slot_for_part(kind: PartKind) -> TemplateSlot {
-    if kind == CONTENT_PRESENTER_PART {
+    if kind == CONTENT_PRESENTER_PART_KIND {
         CONTENT_SLOT
     } else {
         ROOT_SLOT

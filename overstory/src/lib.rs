@@ -49,14 +49,16 @@ pub use presentation::{
 pub use property::{TextContent, TextStyle, UiProperties};
 pub use style::{StyleInspection, StyleRuleInspection, StyleSourceInspection, StyleSubject};
 pub use template::{
-    BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART,
-    CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CONTENT_SLOT, CONTENT_SLOT_PART_TAG,
-    CORNER_RADIUS_PROPERTY, ControlTemplate, FOREGROUND_PROPERTY, PADDING_PROPERTY, PartKind,
-    ROOT_PART, ROOT_SLOT, ROW_PART, TEXT_BLOCK_PART, TEXT_CARET_PART, TEXT_INPUT_PART,
-    TEXT_SELECTION_PART, TOGGLE_PART, TOGGLE_THUMB_PART, TOGGLE_THUMB_SLOT,
-    TOGGLE_THUMB_SLOT_PART_TAG, TOGGLE_TRACK_PART, TOGGLE_TRACK_SLOT, TOGGLE_TRACK_SLOT_PART_TAG,
-    TemplateBinding, TemplateLayout, TemplateNode, TemplateProperty, TemplateSlot,
-    TemplateSlotLayout, button_template, text_block_template, text_input_template, toggle_template,
+    BACKGROUND_PROPERTY, BORDER_PART_KIND, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY,
+    BUTTON_PART_KIND, CONTENT_PRESENTER_PART_KIND, CONTENT_PROPERTY, CONTENT_SLOT,
+    CONTENT_SLOT_PART_TAG, CORNER_RADIUS_PROPERTY, ControlTemplate, FOREGROUND_PROPERTY,
+    PADDING_PROPERTY, PartKind, ROOT_PART_KIND, ROOT_SLOT, ROW_PART_KIND, TEXT_BLOCK_PART_KIND,
+    TEXT_CARET_PART_KIND, TEXT_INPUT_PART_KIND, TEXT_SELECTION_PART_KIND, TOGGLE_PART_KIND,
+    TOGGLE_THUMB_PART_KIND, TOGGLE_THUMB_SLOT, TOGGLE_THUMB_SLOT_PART_TAG, TOGGLE_TRACK_PART_KIND,
+    TOGGLE_TRACK_SLOT, TOGGLE_TRACK_SLOT_PART_TAG, TemplateBinding, TemplateBindingTarget,
+    TemplateBounds, TemplateInset, TemplateLayout, TemplateNode, TemplatePrimitive,
+    TemplateProperty, TemplateSlot, TemplateSlotLayout, bind, button_template, pass,
+    text_block_template, text_input_template, toggle_template,
 };
 pub use text::{TextGlyph, TextGlyphRun, TextSystem};
 pub use ui::Ui;

@@ -40,7 +40,7 @@ use crate::style::{StyleInspection, StyleRuleInspection, StyleSourceInspection, 
 use crate::template::{TemplateBinding, TemplateValueSource};
 use crate::{
     ARRANGE, AppendSpec, Button, ElementId, ElementKind, ElementState, MEASURE, Panel,
-    PresentationNode, PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE,
+    PresentationNode, PresentationNodeId, PresentationTree, ROOT_PART_KIND, Row, STYLE, TEMPLATE,
     TemplateSlot, TextBlock, TextContent, TextInput, TextStyle, TextSystem, Toggle, UiProperties,
     VISUAL,
     widget::{FocusEventCx, KeyboardEventCx, PointerEventCx, TimerEventCx, Widget},
@@ -261,28 +261,38 @@ impl TemplateValueSource for TemplateValueResolver<'_> {
         binding: TemplateBinding,
     ) {
         if binding.target == crate::BACKGROUND_PROPERTY {
-            if let Some(value) = self.resolve_brush(binding.source) {
-                node.surface_primitive_mut().background = value;
+            if let Some(value) = self.resolve_brush(binding.source)
+                && let Some(surface) = node.surface_primitive_mut_if_present()
+            {
+                surface.background = value;
             }
         } else if binding.target == crate::FOREGROUND_PROPERTY {
-            if let Some(value) = self.resolve_brush(binding.source) {
-                node.text_primitive_mut().foreground = value;
+            if let Some(value) = self.resolve_brush(binding.source)
+                && let Some(text) = node.text_primitive_mut_if_present()
+            {
+                text.foreground = value;
             }
         } else if binding.target == crate::BORDER_PROPERTY {
-            if let Some(value) = self.resolve_brush(binding.source) {
-                node.surface_primitive_mut().border = value;
+            if let Some(value) = self.resolve_brush(binding.source)
+                && let Some(surface) = node.surface_primitive_mut_if_present()
+            {
+                surface.border = value;
             }
         } else if binding.target == crate::BORDER_WIDTH_PROPERTY {
-            if let Some(value) = self.resolve_f64(binding.source) {
-                node.surface_primitive_mut().border_width = value;
+            if let Some(value) = self.resolve_f64(binding.source)
+                && let Some(surface) = node.surface_primitive_mut_if_present()
+            {
+                surface.border_width = value;
             }
         } else if binding.target == crate::PADDING_PROPERTY {
             if binding.source == crate::PADDING_PROPERTY {
                 let _padding = self.resolve::<Insets>(self.ui.properties.padding);
             }
         } else if binding.target == crate::CORNER_RADIUS_PROPERTY {
-            if let Some(value) = self.resolve_f64(binding.source) {
-                node.surface_primitive_mut().corner_radius = value;
+            if let Some(value) = self.resolve_f64(binding.source)
+                && let Some(surface) = node.surface_primitive_mut_if_present()
+            {
+                surface.corner_radius = value;
             }
         } else if binding.target == crate::CONTENT_PROPERTY
             && binding.source == crate::CONTENT_PROPERTY
@@ -318,9 +328,10 @@ impl TemplateValueResolver<'_> {
     }
 
     fn apply_content(&self, node: &mut PresentationNode) {
-        let text = node.text_primitive_mut();
-        text.content = self.content.clone().unwrap_or_default();
-        text.style = self.text_style();
+        if let Some(text) = node.text_primitive_mut_if_present() {
+            text.content = self.content.clone().unwrap_or_default();
+            text.style = self.text_style();
+        }
     }
 }
 
@@ -1221,7 +1232,7 @@ impl Ui {
         let root_padding = self.resolve::<Insets>(root, properties.padding);
         let mut root_node = PresentationNode::new(
             root,
-            ROOT_PART,
+            ROOT_PART_KIND,
             Rect::from_origin_size((0.0, 0.0), viewport),
         );
         root_node.surface_primitive_mut().background = root_background;
@@ -1849,6 +1860,13 @@ fn timestamp_ms(timestamp_ns: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        BACKGROUND_PROPERTY, BORDER_PART_KIND, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY,
+        BUTTON_PART_KIND, CONTENT_PRESENTER_PART_KIND, CONTENT_PROPERTY, CONTENT_SLOT,
+        CORNER_RADIUS_PROPERTY, ControlTemplate, FOREGROUND_PROPERTY, PartKind,
+        TEXT_CARET_PART_KIND, TEXT_INPUT_PART_KIND, TOGGLE_PART_KIND, TOGGLE_THUMB_PART_KIND,
+        TOGGLE_THUMB_SLOT, TOGGLE_TRACK_PART_KIND, TOGGLE_TRACK_SLOT, TemplateNode, bind, pass,
+    };
     use alloc::rc::Rc;
     use core::cell::RefCell;
     use ui_events::keyboard::{Code, Key, KeyboardEvent, NamedKey};
@@ -1894,14 +1912,14 @@ mod tests {
         assert_eq!(tree.nodes().len(), 4);
 
         let button = &tree.nodes()[1];
-        assert_eq!(button.kind, crate::BUTTON_PART);
+        assert_eq!(button.kind, BUTTON_PART_KIND);
         assert_eq!(button.bounds.x0, 0.0);
         assert_eq!(button.bounds.y0, 0.0);
         assert!(button.bounds.width() > 10.0);
         assert!(button.bounds.height() > 10.0);
 
         let content = &tree.nodes()[3];
-        assert_eq!(content.kind, crate::CONTENT_PRESENTER_PART);
+        assert_eq!(content.kind, CONTENT_PRESENTER_PART_KIND);
         assert_eq!(content.bounds.x0, 4.0);
         assert_eq!(content.bounds.y0, 2.0);
         assert!(content.bounds.width() > 0.0);
@@ -1928,8 +1946,11 @@ mod tests {
             element: ElementId,
             bounds: Rect,
         ) -> PresentationNodeId {
-            const BADGE_PART: crate::PartKind = crate::PartKind::new("test-badge");
-            tree.push_child(parent, PresentationNode::new(element, BADGE_PART, bounds))
+            const BADGE_PART_KIND: PartKind = PartKind::new("test-badge");
+            tree.push_child(
+                parent,
+                PresentationNode::new(element, BADGE_PART_KIND, bounds),
+            )
         }
 
         fn as_any(&self) -> &dyn core::any::Any {
@@ -1963,10 +1984,10 @@ mod tests {
             element: ElementId,
             bounds: Rect,
         ) -> PresentationNodeId {
-            const ACTIVATING_PART: crate::PartKind = crate::PartKind::new("test-activating");
+            const ACTIVATING_PART_KIND: PartKind = PartKind::new("test-activating");
             tree.push_child(
                 parent,
-                PresentationNode::new(element, ACTIVATING_PART, bounds),
+                PresentationNode::new(element, ACTIVATING_PART_KIND, bounds),
             )
         }
 
@@ -2018,10 +2039,10 @@ mod tests {
             element: ElementId,
             bounds: Rect,
         ) -> PresentationNodeId {
-            const MUTATING_PART: crate::PartKind = crate::PartKind::new("test-keyboard-mutating");
+            const MUTATING_PART_KIND: PartKind = PartKind::new("test-keyboard-mutating");
             tree.push_child(
                 parent,
-                PresentationNode::new(element, MUTATING_PART, bounds),
+                PresentationNode::new(element, MUTATING_PART_KIND, bounds),
             )
         }
 
@@ -2071,8 +2092,11 @@ mod tests {
             element: ElementId,
             bounds: Rect,
         ) -> PresentationNodeId {
-            const TIMER_PART: crate::PartKind = crate::PartKind::new("test-timer-mutating");
-            tree.push_child(parent, PresentationNode::new(element, TIMER_PART, bounds))
+            const TIMER_PART_KIND: PartKind = PartKind::new("test-timer-mutating");
+            tree.push_child(
+                parent,
+                PresentationNode::new(element, TIMER_PART_KIND, bounds),
+            )
         }
 
         fn timer_event(&mut self, cx: &mut TimerEventCx, _timer: TimerId) -> Outcome {
@@ -2104,7 +2128,7 @@ mod tests {
             .iter()
             .any(|node| {
                 node.source == id
-                    && node.kind == crate::PartKind::new("test-badge")
+                    && node.kind == PartKind::new("test-badge")
                     && node.bounds.width() == 30.0
                     && node.bounds.height() == 12.0
             });
@@ -2198,7 +2222,7 @@ mod tests {
             .presentation(Size::new(200.0, 100.0))
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.kind == CONTENT_PRESENTER_PART_KIND)
             .map(|node| {
                 let text = text(node);
                 (
@@ -2230,7 +2254,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.source == id && node.kind == CONTENT_PRESENTER_PART_KIND)
             .map(text)
             .map(|text| text.content.as_str());
         assert_eq!(presenter_text, Some("a"));
@@ -2245,7 +2269,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::TEXT_INPUT_PART)
+            .find(|node| node.source == id && node.kind == TEXT_INPUT_PART_KIND)
             .map(|node| node.bounds)
             .expect("text input should be presented");
 
@@ -2256,7 +2280,7 @@ mod tests {
             ui.presentation(viewport)
                 .nodes()
                 .iter()
-                .any(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+                .any(|node| node.source == id && node.kind == TEXT_CARET_PART_KIND)
         );
 
         assert!(ui.timer_event(500_000_000));
@@ -2264,7 +2288,7 @@ mod tests {
             !ui.presentation(viewport)
                 .nodes()
                 .iter()
-                .any(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+                .any(|node| node.source == id && node.kind == TEXT_CARET_PART_KIND)
         );
     }
 
@@ -2293,13 +2317,13 @@ mod tests {
         let content_bounds = tree
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.source == id && node.kind == CONTENT_PRESENTER_PART_KIND)
             .map(|node| node.bounds)
             .expect("text input should emit presented text");
         let caret_bounds = tree
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .find(|node| node.source == id && node.kind == TEXT_CARET_PART_KIND)
             .map(|node| node.bounds)
             .expect("focused text input should emit a caret");
 
@@ -2330,7 +2354,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .find(|node| node.source == id && node.kind == TEXT_CARET_PART_KIND)
             .map(|node| node.bounds.x0)
             .expect("focused text input should emit a caret");
 
@@ -2342,7 +2366,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .find(|node| node.source == id && node.kind == TEXT_CARET_PART_KIND)
             .map(|node| node.bounds.x0)
             .expect("focused text input should emit a caret");
 
@@ -2391,7 +2415,7 @@ mod tests {
             .nodes()
             .iter()
             .filter(|node| node.source == first || node.source == second)
-            .filter(|node| node.kind == crate::TEXT_BLOCK_PART)
+            .filter(|node| node.kind == crate::TEXT_BLOCK_PART_KIND)
             .map(|node| (node.source, node.bounds))
             .collect::<Vec<_>>();
         let first_bounds = positions
@@ -2428,7 +2452,7 @@ mod tests {
             .presentation(Size::new(240.0, 80.0))
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
+            .find(|node| node.kind == TOGGLE_THUMB_PART_KIND)
             .map(|node| node.bounds.x0)
             .expect("toggle should emit a thumb");
 
@@ -2444,7 +2468,7 @@ mod tests {
             .presentation(Size::new(240.0, 80.0))
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
+            .find(|node| node.kind == TOGGLE_THUMB_PART_KIND)
             .map(|node| node.bounds.x0)
             .expect("toggle should emit a thumb after activation");
         assert!(updated_thumb_x > initial_thumb_x);
@@ -2459,7 +2483,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_PART)
+            .find(|node| node.kind == TOGGLE_PART_KIND)
             .map(|node| node.bounds)
             .expect("toggle should be presented");
         let point = bounds.center();
@@ -2491,7 +2515,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::BUTTON_PART)
+            .find(|node| node.kind == BUTTON_PART_KIND)
             .map(|node| node.bounds)
             .expect("button should be presented");
 
@@ -2521,7 +2545,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_PART)
+            .find(|node| node.kind == TOGGLE_PART_KIND)
             .map(|node| node.bounds)
             .expect("toggle should be presented");
         let inside = bounds.center();
@@ -2549,7 +2573,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_PART)
+            .find(|node| node.kind == TOGGLE_PART_KIND)
             .map(|node| node.bounds)
             .expect("toggle should be presented");
 
@@ -2572,7 +2596,7 @@ mod tests {
             .presentation(viewport)
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_PART)
+            .find(|node| node.kind == TOGGLE_PART_KIND)
             .map(|node| node.bounds)
             .expect("toggle should be presented");
 
@@ -2651,7 +2675,7 @@ mod tests {
         let button_bounds = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::BUTTON_PART)
+            .find(|node| node.kind == BUTTON_PART_KIND)
             .map(|node| node.bounds)
             .expect("button should be presented");
 
@@ -2671,13 +2695,13 @@ mod tests {
         let first_bounds = tree
             .nodes()
             .iter()
-            .find(|node| node.source == first && node.kind == crate::BUTTON_PART)
+            .find(|node| node.source == first && node.kind == BUTTON_PART_KIND)
             .map(|node| node.bounds)
             .expect("first button should be presented");
         let second_bounds = tree
             .nodes()
             .iter()
-            .find(|node| node.source == second && node.kind == crate::BUTTON_PART)
+            .find(|node| node.source == second && node.kind == BUTTON_PART_KIND)
             .map(|node| node.bounds)
             .expect("second button should be presented");
         let overlap = first_bounds.intersect(second_bounds);
@@ -2701,17 +2725,17 @@ mod tests {
         let track = initial
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_TRACK_PART)
+            .find(|node| node.kind == TOGGLE_TRACK_PART_KIND)
             .expect("toggle template should emit a track part");
         let thumb = initial
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
+            .find(|node| node.kind == TOGGLE_THUMB_PART_KIND)
             .expect("toggle template should emit a thumb part");
         let content = initial
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.kind == CONTENT_PRESENTER_PART_KIND)
             .expect("toggle template should emit a content presenter");
 
         assert_eq!(surface(track).background, Some(background.clone()));
@@ -2723,12 +2747,12 @@ mod tests {
         let checked_track = checked
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_TRACK_PART)
+            .find(|node| node.kind == TOGGLE_TRACK_PART_KIND)
             .expect("checked toggle should emit a track part");
         let checked_thumb = checked
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
+            .find(|node| node.kind == TOGGLE_THUMB_PART_KIND)
             .expect("checked toggle should emit a thumb part");
 
         assert_eq!(surface(checked_track).background, Some(foreground));
@@ -2737,10 +2761,10 @@ mod tests {
 
     #[test]
     fn custom_toggle_template_uses_slots_not_builtin_part_names() {
-        const CUSTOM_TOGGLE_PART: crate::PartKind = crate::PartKind::new("custom-toggle");
-        const CUSTOM_GROOVE_PART: crate::PartKind = crate::PartKind::new("custom-groove");
-        const CUSTOM_KNOB_PART: crate::PartKind = crate::PartKind::new("custom-knob");
-        const CUSTOM_LABEL_PART: crate::PartKind = crate::PartKind::new("custom-label");
+        const CUSTOM_TOGGLE_PART_KIND: PartKind = PartKind::new("custom-toggle");
+        const CUSTOM_GROOVE_PART_KIND: PartKind = PartKind::new("custom-groove");
+        const CUSTOM_KNOB_PART_KIND: PartKind = PartKind::new("custom-knob");
+        const CUSTOM_LABEL_PART_KIND: PartKind = PartKind::new("custom-label");
 
         let mut ui = Ui::new();
         let id = ui.add_toggle(ui.root(), "Custom");
@@ -2750,47 +2774,36 @@ mod tests {
         ui.set_local(
             id,
             ui.properties().toggle_template,
-            crate::ControlTemplate::new(crate::TemplateNode::new(
-                CUSTOM_TOGGLE_PART,
-                [],
-                [
-                    crate::TemplateNode::new(
-                        CUSTOM_GROOVE_PART,
-                        [TemplateBinding::pass(crate::BACKGROUND_PROPERTY)],
-                        [],
-                    )
-                    .with_slot(crate::TOGGLE_TRACK_SLOT),
-                    crate::TemplateNode::new(
-                        CUSTOM_KNOB_PART,
-                        [TemplateBinding::pass(crate::BACKGROUND_PROPERTY)],
-                        [],
-                    )
-                    .with_slot(crate::TOGGLE_THUMB_SLOT),
-                    crate::TemplateNode::new(
-                        CUSTOM_LABEL_PART,
-                        [TemplateBinding::pass(crate::CONTENT_PROPERTY)],
-                        [],
-                    )
-                    .with_slot(crate::CONTENT_SLOT),
-                ],
-            )),
+            ControlTemplate::new(
+                TemplateNode::group(CUSTOM_TOGGLE_PART_KIND).with_children([
+                    TemplateNode::surface(CUSTOM_GROOVE_PART_KIND)
+                        .with_bindings([pass(BACKGROUND_PROPERTY)])
+                        .with_slot(TOGGLE_TRACK_SLOT),
+                    TemplateNode::surface(CUSTOM_KNOB_PART_KIND)
+                        .with_bindings([pass(BACKGROUND_PROPERTY)])
+                        .with_slot(TOGGLE_THUMB_SLOT),
+                    TemplateNode::text(CUSTOM_LABEL_PART_KIND)
+                        .with_bindings([pass(CONTENT_PROPERTY)])
+                        .with_slot(CONTENT_SLOT),
+                ]),
+            ),
         );
 
         let tree = ui.presentation(Size::new(240.0, 80.0));
         let groove = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == CUSTOM_GROOVE_PART)
+            .find(|node| node.kind == CUSTOM_GROOVE_PART_KIND)
             .expect("custom template should emit its own track part");
         let knob = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == CUSTOM_KNOB_PART)
+            .find(|node| node.kind == CUSTOM_KNOB_PART_KIND)
             .expect("custom template should emit its own thumb part");
         let label = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == CUSTOM_LABEL_PART)
+            .find(|node| node.kind == CUSTOM_LABEL_PART_KIND)
             .expect("custom template should emit its own label part");
 
         assert_eq!(surface(groove).background, Some(background.clone()));
@@ -2804,9 +2817,9 @@ mod tests {
     fn template_style_state_follows_structural_slot_path() {
         use understory_style::{StyleBuilder, StyleCascadeBuilder, StyleOrigin};
 
-        const CUSTOM_TOGGLE_PART: crate::PartKind = crate::PartKind::new("path-toggle");
-        const CUSTOM_GROOVE_PART: crate::PartKind = crate::PartKind::new("path-groove");
-        const CUSTOM_KNOB_PART: crate::PartKind = crate::PartKind::new("path-knob");
+        const CUSTOM_TOGGLE_PART_KIND: PartKind = PartKind::new("path-toggle");
+        const CUSTOM_GROOVE_PART_KIND: PartKind = PartKind::new("path-groove");
+        const CUSTOM_KNOB_PART_KIND: PartKind = PartKind::new("path-knob");
 
         let mut ui = Ui::new();
         let id = ui.add_toggle(ui.root(), "Path");
@@ -2837,38 +2850,30 @@ mod tests {
         let built_in_thumb = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::TOGGLE_THUMB_PART)
+            .find(|node| node.kind == TOGGLE_THUMB_PART_KIND)
             .expect("built-in toggle template should emit a nested thumb");
         assert_eq!(surface(built_in_thumb).background, Some(nested));
 
         ui.set_local(
             id,
             props.toggle_template,
-            crate::ControlTemplate::new(crate::TemplateNode::new(
-                CUSTOM_TOGGLE_PART,
-                [],
-                [
-                    crate::TemplateNode::new(
-                        CUSTOM_GROOVE_PART,
-                        [TemplateBinding::pass(crate::BACKGROUND_PROPERTY)],
-                        [],
-                    )
-                    .with_slot(crate::TOGGLE_TRACK_SLOT),
-                    crate::TemplateNode::new(
-                        CUSTOM_KNOB_PART,
-                        [TemplateBinding::pass(crate::BACKGROUND_PROPERTY)],
-                        [],
-                    )
-                    .with_slot(crate::TOGGLE_THUMB_SLOT),
-                ],
-            )),
+            ControlTemplate::new(
+                TemplateNode::group(CUSTOM_TOGGLE_PART_KIND).with_children([
+                    TemplateNode::surface(CUSTOM_GROOVE_PART_KIND)
+                        .with_bindings([pass(BACKGROUND_PROPERTY)])
+                        .with_slot(TOGGLE_TRACK_SLOT),
+                    TemplateNode::surface(CUSTOM_KNOB_PART_KIND)
+                        .with_bindings([pass(BACKGROUND_PROPERTY)])
+                        .with_slot(TOGGLE_THUMB_SLOT),
+                ]),
+            ),
         );
 
         let tree = ui.presentation(Size::new(240.0, 80.0));
         let custom_knob = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == CUSTOM_KNOB_PART)
+            .find(|node| node.kind == CUSTOM_KNOB_PART_KIND)
             .expect("custom template should emit a sibling thumb");
         assert_eq!(surface(custom_knob).background, Some(fallback));
     }
@@ -2981,30 +2986,35 @@ mod tests {
         let template = crate::button_template();
         let root = template.root();
 
-        assert_eq!(root.kind, crate::BUTTON_PART);
+        assert_eq!(root.kind, BUTTON_PART_KIND);
+        assert_eq!(root.primitive, crate::TemplatePrimitive::Group);
         assert_eq!(root.children.len(), 1);
-        assert_eq!(root.children[0].kind, crate::BORDER_PART);
+        assert_eq!(root.children[0].kind, BORDER_PART_KIND);
+        assert_eq!(
+            root.children[0].primitive,
+            crate::TemplatePrimitive::Surface
+        );
         assert_eq!(
             root.children[0].bindings.as_ref(),
             &[
-                TemplateBinding::pass(crate::BACKGROUND_PROPERTY),
-                TemplateBinding::pass(crate::BORDER_PROPERTY),
-                TemplateBinding::pass(crate::BORDER_WIDTH_PROPERTY),
-                TemplateBinding::pass(crate::PADDING_PROPERTY),
-                TemplateBinding::pass(crate::CORNER_RADIUS_PROPERTY),
+                pass(BACKGROUND_PROPERTY),
+                pass(BORDER_PROPERTY),
+                pass(BORDER_WIDTH_PROPERTY),
+                pass(CORNER_RADIUS_PROPERTY),
             ],
         );
         assert_eq!(root.children[0].children.len(), 1);
         assert_eq!(
             root.children[0].children[0].kind,
-            crate::CONTENT_PRESENTER_PART
+            CONTENT_PRESENTER_PART_KIND
+        );
+        assert_eq!(
+            root.children[0].children[0].primitive,
+            crate::TemplatePrimitive::Text
         );
         assert_eq!(
             root.children[0].children[0].bindings.as_ref(),
-            &[
-                TemplateBinding::pass(crate::CONTENT_PROPERTY),
-                TemplateBinding::pass(crate::FOREGROUND_PROPERTY),
-            ],
+            &[pass(CONTENT_PROPERTY), pass(FOREGROUND_PROPERTY),],
         );
     }
 
@@ -3012,40 +3022,21 @@ mod tests {
     fn style_can_select_structurally_different_button_template() {
         use understory_style::{StyleBuilder, StyleCascadeBuilder, StyleOrigin};
 
-        const ACCENT_PART: crate::PartKind = crate::PartKind::new("test-accent");
+        const ACCENT_PART_KIND: PartKind = PartKind::new("test-accent");
 
         let mut ui = Ui::new();
         let id = ui.add_button(ui.root(), "Save");
         let props = ui.properties();
-        let alternate = crate::ControlTemplate::new(crate::TemplateNode::new(
-            crate::BUTTON_PART,
-            [],
-            [crate::TemplateNode::new(
-                crate::BORDER_PART,
-                [
-                    TemplateBinding::pass(crate::BACKGROUND_PROPERTY),
-                    TemplateBinding::pass(crate::BORDER_PROPERTY),
-                    TemplateBinding::pass(crate::BORDER_WIDTH_PROPERTY),
-                    TemplateBinding::pass(crate::PADDING_PROPERTY),
-                    TemplateBinding::pass(crate::CORNER_RADIUS_PROPERTY),
-                ],
-                [
-                    crate::TemplateNode::new(
-                        ACCENT_PART,
-                        [TemplateBinding::pass(crate::BACKGROUND_PROPERTY)],
-                        [],
-                    ),
-                    crate::TemplateNode::new(
-                        crate::CONTENT_PRESENTER_PART,
-                        [
-                            TemplateBinding::pass(crate::CONTENT_PROPERTY),
-                            TemplateBinding::pass(crate::FOREGROUND_PROPERTY),
-                        ],
-                        [],
-                    ),
-                ],
-            )],
-        ));
+        let alternate = ControlTemplate::new(
+            TemplateNode::group(BUTTON_PART_KIND).with_children([TemplateNode::surface(
+                BORDER_PART_KIND,
+            )
+            .with_default_bindings()
+            .with_children([
+                TemplateNode::surface(ACCENT_PART_KIND).with_bindings([pass(BACKGROUND_PROPERTY)]),
+                TemplateNode::text(CONTENT_PRESENTER_PART_KIND).with_default_bindings(),
+            ])]),
+        );
         let hovered_template = StyleBuilder::new()
             .set(props.template, alternate.clone())
             .build();
@@ -3062,33 +3053,28 @@ mod tests {
 
         assert_eq!(ui.resolve(id, props.template), alternate);
         let tree = ui.presentation(Size::new(200.0, 100.0));
-        assert!(tree.nodes().iter().any(|node| node.kind == ACCENT_PART));
+        assert!(
+            tree.nodes()
+                .iter()
+                .any(|node| node.kind == ACCENT_PART_KIND)
+        );
         assert_eq!(tree.nodes().len(), 5);
     }
 
     #[test]
     fn template_node_inset_shrinks_part_bounds() {
-        const INNER_PART: crate::PartKind = crate::PartKind::new("test-inner-border");
+        const INNER_PART_KIND: PartKind = PartKind::new("test-inner-border");
 
         let mut ui = Ui::new();
         let id = ui.add_button(ui.root(), "Save");
-        let template = crate::ControlTemplate::new(crate::TemplateNode::new(
-            crate::BUTTON_PART,
-            [],
-            [crate::TemplateNode::new(
-                INNER_PART,
-                [],
-                [crate::TemplateNode::new(
-                    crate::CONTENT_PRESENTER_PART,
-                    [
-                        TemplateBinding::pass(crate::CONTENT_PROPERTY),
-                        TemplateBinding::pass(crate::FOREGROUND_PROPERTY),
-                    ],
-                    [],
-                )],
+        let template = ControlTemplate::new(
+            TemplateNode::group(BUTTON_PART_KIND).with_children([TemplateNode::group(
+                INNER_PART_KIND,
             )
-            .with_inset(3.0)],
-        ));
+            .with_children([TemplateNode::text(CONTENT_PRESENTER_PART_KIND)
+                .with_bindings([pass(CONTENT_PROPERTY), pass(FOREGROUND_PROPERTY)])])
+            .with_inset(3.0)]),
+        );
         ui.set_local(id, ui.properties().template, template);
 
         let tree = ui.presentation(Size::new(200.0, 100.0));
@@ -3096,7 +3082,7 @@ mod tests {
         let inner = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == INNER_PART)
+            .find(|node| node.kind == INNER_PART_KIND)
             .expect("template should instantiate inner part");
 
         assert_eq!(inner.bounds.x0, button.bounds.x0 + 3.0);
@@ -3111,18 +3097,12 @@ mod tests {
         let id = ui.add_button(ui.root(), "Save");
         let background: Brush = peniko::Color::from_rgb8(0x1d, 0x4e, 0x89).into();
         let border: Brush = peniko::Color::from_rgb8(0xff, 0xc8, 0x57).into();
-        let template = crate::ControlTemplate::new(crate::TemplateNode::new(
-            crate::BUTTON_PART,
-            [],
-            [crate::TemplateNode::new(
-                crate::BORDER_PART,
-                [
-                    TemplateBinding::new(crate::BACKGROUND_PROPERTY, crate::BORDER_PROPERTY),
-                    TemplateBinding::new(crate::BORDER_PROPERTY, crate::BACKGROUND_PROPERTY),
-                ],
-                [],
-            )],
-        ));
+        let template = ControlTemplate::new(TemplateNode::group(BUTTON_PART_KIND).with_children([
+            TemplateNode::surface(BORDER_PART_KIND).with_bindings([
+                bind(BACKGROUND_PROPERTY).from(BORDER_PROPERTY),
+                bind(BORDER_PROPERTY).from(BACKGROUND_PROPERTY),
+            ]),
+        ]));
 
         let props = ui.properties();
         ui.set_local(id, props.background, Some(background.clone()));
@@ -3133,7 +3113,7 @@ mod tests {
         let border_node = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::BORDER_PART)
+            .find(|node| node.kind == BORDER_PART_KIND)
             .expect("custom template should emit a border part");
 
         assert_eq!(surface(border_node).background, Some(border));
@@ -3280,7 +3260,7 @@ mod tests {
         let border = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::BORDER_PART)
+            .find(|node| node.kind == BORDER_PART_KIND)
             .expect("button template should emit a border");
         assert_eq!(surface(border).background, Some(base));
         assert!(!ui.is_invalidated(id, STYLE));
@@ -3301,7 +3281,7 @@ mod tests {
         let border = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::BORDER_PART)
+            .find(|node| node.kind == BORDER_PART_KIND)
             .expect("button template should still emit a border");
         assert_eq!(surface(border).background, Some(hover));
     }
@@ -3340,7 +3320,7 @@ mod tests {
         let content = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.kind == CONTENT_PRESENTER_PART_KIND)
             .expect("button template should emit content");
         assert_eq!(text(content).foreground, Some(base));
 
@@ -3356,7 +3336,7 @@ mod tests {
         let content = tree
             .nodes()
             .iter()
-            .find(|node| node.kind == crate::CONTENT_PRESENTER_PART)
+            .find(|node| node.kind == CONTENT_PRESENTER_PART_KIND)
             .expect("button template should still emit content");
         assert_eq!(text(content).foreground, Some(hover));
     }
