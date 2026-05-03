@@ -13,7 +13,8 @@ use understory_property::Property;
 use understory_style::{ClassId, StyleCascade};
 
 use crate::{
-    Button, ControlTemplate, ElementId, Panel, Row, TextBlock, TextContent, Toggle, Ui, Widget,
+    Button, ControlTemplate, ElementId, Panel, Row, TextBlock, TextContent, TextInput, Toggle, Ui,
+    Widget,
 };
 
 type ElementWrite = Box<dyn FnOnce(&mut Ui, ElementId)>;
@@ -34,6 +35,12 @@ pub fn button(content: impl Into<TextContent>) -> WidgetSpec<Button> {
 #[must_use]
 pub fn text_block(content: impl Into<TextContent>) -> WidgetSpec<TextBlock> {
     WidgetSpec::new(TextBlock::new(content))
+}
+
+/// Creates a configured text input append spec.
+#[must_use]
+pub fn text_input() -> WidgetSpec<TextInput> {
+    WidgetSpec::new(TextInput::new())
 }
 
 /// Creates a configured panel append spec.
@@ -124,6 +131,35 @@ impl WidgetSpec<TextBlock> {
     #[must_use]
     pub fn template(self, template: ControlTemplate) -> Self {
         self.set_template_property(template, |properties| properties.text_template)
+    }
+}
+
+impl WidgetSpec<TextInput> {
+    /// Sets initial text.
+    #[must_use]
+    pub fn text(mut self, text: &str) -> Self {
+        self.widget.set_text(text);
+        self
+    }
+
+    /// Sets placeholder text shown while the input is empty.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<TextContent>) -> Self {
+        self.widget = self.widget.placeholder(placeholder);
+        self
+    }
+
+    /// Sets whether editing is restricted to one line.
+    #[must_use]
+    pub fn single_line(mut self, single_line: bool) -> Self {
+        self.widget = self.widget.single_line(single_line);
+        self
+    }
+
+    /// Sets the control template used by this text input.
+    #[must_use]
+    pub fn template(self, template: ControlTemplate) -> Self {
+        self.set_template_property(template, |properties| properties.text_input_template)
     }
 }
 

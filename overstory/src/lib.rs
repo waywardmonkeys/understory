@@ -39,7 +39,7 @@ pub use channel::{ARRANGE, MEASURE, STYLE, TEMPLATE, VISUAL};
 pub use compose::AppendSpec;
 pub use element::{
     BUTTON_TYPE, CHECKED, DISABLED, ElementKind, ElementState, HOVERED, PANEL_TYPE, PRESSED,
-    ROOT_TYPE, ROW_TYPE, TEXT_BLOCK_TYPE, TOGGLE_TYPE,
+    ROOT_TYPE, ROW_TYPE, TEXT_BLOCK_TYPE, TEXT_INPUT_TYPE, TOGGLE_TYPE,
 };
 pub use id::ElementId;
 pub use presentation::{PresentationNode, PresentationNodeId, PresentationTree};
@@ -49,15 +49,17 @@ pub use template::{
     BACKGROUND_PROPERTY, BORDER_PART, BORDER_PROPERTY, BORDER_WIDTH_PROPERTY, BUTTON_PART,
     CONTENT_PRESENTER_PART, CONTENT_PROPERTY, CONTENT_SLOT, CONTENT_SLOT_PART_TAG,
     CORNER_RADIUS_PROPERTY, ControlTemplate, FOREGROUND_PROPERTY, PADDING_PROPERTY, PartKind,
-    ROOT_PART, ROOT_SLOT, ROW_PART, TEXT_BLOCK_PART, TOGGLE_PART, TOGGLE_THUMB_PART,
-    TOGGLE_THUMB_SLOT, TOGGLE_THUMB_SLOT_PART_TAG, TOGGLE_TRACK_PART, TOGGLE_TRACK_SLOT,
-    TOGGLE_TRACK_SLOT_PART_TAG, TemplateBinding, TemplateLayout, TemplateNode, TemplateProperty,
-    TemplateSlot, TemplateSlotLayout, button_template, text_block_template, toggle_template,
+    ROOT_PART, ROOT_SLOT, ROW_PART, TEXT_BLOCK_PART, TEXT_CARET_PART, TEXT_INPUT_PART,
+    TEXT_SELECTION_PART, TOGGLE_PART, TOGGLE_THUMB_PART, TOGGLE_THUMB_SLOT,
+    TOGGLE_THUMB_SLOT_PART_TAG, TOGGLE_TRACK_PART, TOGGLE_TRACK_SLOT, TOGGLE_TRACK_SLOT_PART_TAG,
+    TemplateBinding, TemplateLayout, TemplateNode, TemplateProperty, TemplateSlot,
+    TemplateSlotLayout, button_template, text_block_template, text_input_template, toggle_template,
 };
 pub use text::{TextGlyph, TextGlyphRun, TextSystem};
 pub use ui::Ui;
 pub use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerRepeat};
 pub use visual::{lower_presentation, lower_presentation_with_scale};
 pub use widget::{
-    Button, KeyboardEventCx, Panel, PointerEventCx, Row, TextBlock, TimerEventCx, Toggle, Widget,
+    Button, FocusEventCx, KeyboardEventCx, Panel, PointerEventCx, Row, TextBlock, TextInput,
+    TimerEventCx, Toggle, Widget,
 };

@@ -49,6 +49,15 @@ pub const CONTENT_PRESENTER_PART: PartKind = PartKind::new("content-presenter");
 /// Built-in text block presentation part kind.
 pub const TEXT_BLOCK_PART: PartKind = PartKind::new("text-block");
 
+/// Built-in text input presentation part kind.
+pub const TEXT_INPUT_PART: PartKind = PartKind::new("text-input");
+
+/// Built-in text selection highlight presentation part kind.
+pub const TEXT_SELECTION_PART: PartKind = PartKind::new("text-selection");
+
+/// Built-in text caret presentation part kind.
+pub const TEXT_CARET_PART: PartKind = PartKind::new("text-caret");
+
 /// Built-in row presentation part kind.
 pub const ROW_PART: PartKind = PartKind::new("row");
 
@@ -289,6 +298,29 @@ pub fn button_template() -> ControlTemplate {
 pub fn text_block_template() -> ControlTemplate {
     ControlTemplate::new(TemplateNode::new(
         TEXT_BLOCK_PART,
+        [
+            TemplateBinding::pass(BACKGROUND_PROPERTY),
+            TemplateBinding::pass(BORDER_PROPERTY),
+            TemplateBinding::pass(BORDER_WIDTH_PROPERTY),
+            TemplateBinding::pass(PADDING_PROPERTY),
+            TemplateBinding::pass(CORNER_RADIUS_PROPERTY),
+        ],
+        [TemplateNode::new(
+            CONTENT_PRESENTER_PART,
+            [
+                TemplateBinding::pass(CONTENT_PROPERTY),
+                TemplateBinding::pass(FOREGROUND_PROPERTY),
+            ],
+            [],
+        )],
+    ))
+}
+
+/// Returns the built-in text input control template.
+#[must_use]
+pub fn text_input_template() -> ControlTemplate {
+    ControlTemplate::new(TemplateNode::new(
+        TEXT_INPUT_PART,
         [
             TemplateBinding::pass(BACKGROUND_PROPERTY),
             TemplateBinding::pass(BORDER_PROPERTY),

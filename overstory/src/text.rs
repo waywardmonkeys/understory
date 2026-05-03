@@ -3,10 +3,13 @@
 
 //! Text services built on Parley.
 
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 
 use kurbo::Size;
-use parley::{FontContext, FontFamily, LayoutContext, PositionedLayoutItem, StyleProperty};
+use parley::{
+    FontContext, FontFamily, FontFamilyName, GenericFamily, LayoutContext, PlainEditor,
+    PlainEditorDriver, PositionedLayoutItem, StyleProperty,
+};
 use peniko::{Brush, FontData};
 
 use crate::{TextContent, TextStyle};
@@ -156,6 +159,40 @@ impl TextSystem {
         runs
     }
 
+    /// Runs a Parley plain editor operation with this text system's shared contexts.
+    pub fn with_plain_editor<R>(
+        &mut self,
+        editor: &mut PlainEditor<Brush>,
+        f: impl FnOnce(&mut PlainEditorDriver<'_, Brush>) -> R,
+    ) -> R {
+        let mut driver = editor.driver(&mut self.font_context, &mut self.layout_context);
+        f(&mut driver)
+    }
+
+    /// Refreshes a plain editor layout using the shared text contexts and text style.
+    pub fn refresh_plain_editor_layout(
+        &mut self,
+        editor: &mut PlainEditor<Brush>,
+        style: &TextStyle,
+        width: f32,
+    ) -> Size {
+        let styles = editor.edit_styles();
+        styles.insert(StyleProperty::FontFamily(parsed_font_family(style)));
+        styles.insert(StyleProperty::FontSize(font_size_f32(style)));
+        editor.set_width(Some(width));
+
+        self.plain_editor_layout_size(editor)
+    }
+
+    /// Returns the current plain editor layout size, refreshing only when dirty.
+    pub fn plain_editor_layout_size(&mut self, editor: &mut PlainEditor<Brush>) -> Size {
+        editor.refresh_layout(&mut self.font_context, &mut self.layout_context);
+        let layout = editor
+            .try_layout()
+            .expect("plain editor layout was just refreshed");
+        Size::new(f64::from(layout.full_width()), f64::from(layout.height()))
+    }
+
     fn builder<'a>(
         &'a mut self,
         text: &'a str,
@@ -180,6 +217,18 @@ impl TextSystem {
 )]
 fn font_size_f32(style: &TextStyle) -> f32 {
     style.font_size().max(1.0) as f32
+}
+
+fn parsed_font_family(style: &TextStyle) -> FontFamily<'static> {
+    let parsed: Vec<_> = FontFamilyName::parse_css_list(style.font_family())
+        .filter_map(Result::ok)
+        .map(FontFamilyName::into_owned)
+        .collect();
+    if parsed.is_empty() {
+        FontFamily::from(GenericFamily::SystemUi)
+    } else {
+        FontFamily::List(Cow::Owned(parsed))
+    }
 }
 
 #[expect(

@@ -12,7 +12,7 @@ use understory_property::{Property, PropertyMetadataBuilder, PropertyRegistry};
 
 use crate::{
     ARRANGE, ControlTemplate, MEASURE, STYLE, TEMPLATE, VISUAL, button_template,
-    text_block_template, toggle_template,
+    text_block_template, text_input_template, toggle_template,
 };
 
 /// Text payload for semantic content properties.
@@ -117,6 +117,8 @@ pub struct UiProperties {
     pub font_family: Property<Box<str>>,
     /// Default structural template used to expand text blocks.
     pub text_template: Property<ControlTemplate>,
+    /// Default structural template used to expand text inputs.
+    pub text_input_template: Property<ControlTemplate>,
     /// Default structural template used to expand toggles.
     pub toggle_template: Property<ControlTemplate>,
 }
@@ -206,6 +208,12 @@ impl UiProperties {
                 .affects_channels(TEMPLATE.into_set())
                 .build(),
         );
+        let text_input_template = registry.register(
+            "TextInputTemplate",
+            PropertyMetadataBuilder::new(text_input_template())
+                .affects_channels(TEMPLATE.into_set())
+                .build(),
+        );
         let toggle_template = registry.register(
             "ToggleTemplate",
             PropertyMetadataBuilder::new(toggle_template())
@@ -227,6 +235,7 @@ impl UiProperties {
             font_size,
             font_family,
             text_template,
+            text_input_template,
             toggle_template,
         }
     }

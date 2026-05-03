@@ -28,6 +28,9 @@ pub const ROW_TYPE: TypeTag = TypeTag(4);
 /// Selector type tag for toggle controls.
 pub const TOGGLE_TYPE: TypeTag = TypeTag(5);
 
+/// Selector type tag for text input controls.
+pub const TEXT_INPUT_TYPE: TypeTag = TypeTag(6);
+
 /// Pseudoclass set when a control is hovered.
 pub const HOVERED: PseudoClassId = PseudoClassId(1);
 
@@ -60,6 +63,8 @@ impl ElementKind {
     pub const ROW: Self = Self::new(ROW_TYPE, "row");
     /// Built-in toggle control kind.
     pub const TOGGLE: Self = Self::new(TOGGLE_TYPE, "toggle");
+    /// Built-in text input control kind.
+    pub const TEXT_INPUT: Self = Self::new(TEXT_INPUT_TYPE, "text-input");
 
     /// Creates an element kind from an application-defined selector type tag.
     #[must_use]

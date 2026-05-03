@@ -491,7 +491,7 @@ fn build_ui() -> Ui {
     ui.append_spec(
         panel,
         compose::text_block(
-            "Button and TextBlock now own their own measurement and presentation. The runtime keeps identity, properties, style, invalidation, and layout scheduling.",
+            "Button, Toggle, TextBlock, and TextInput own their measurement and presentation. The runtime keeps identity, properties, style, invalidation, and layout scheduling.",
         )
         .set(props.padding, kurbo::Insets::uniform(0.0))
         .set(props.font_size, 14.0)
@@ -500,6 +500,15 @@ fn build_ui() -> Ui {
             props.foreground,
             Some(Brush::from(PaintColor::from_rgb8(0xb5, 0xbe, 0xca))),
         ),
+    );
+
+    ui.append_spec(
+        panel,
+        compose::text_input()
+            .placeholder("Type here")
+            .set(props.padding, kurbo::Insets::new(14.0, 9.0, 14.0, 11.0))
+            .set(props.min_width, 280.0)
+            .style(built_in::text_input_style(props)),
     );
 
     let row = ui.append_spec(

@@ -131,6 +131,23 @@ pub fn text_block_style(properties: UiProperties) -> StyleCascade {
         .build()
 }
 
+/// Returns a neutral default style for text inputs.
+#[must_use]
+pub fn text_input_style(properties: UiProperties) -> StyleCascade {
+    StyleCascadeBuilder::new()
+        .push_style(
+            StyleOrigin::Base,
+            StyleBuilder::new()
+                .set(properties.background, Some(brush(rgb(0x13, 0x17, 0x1d))))
+                .set(properties.foreground, Some(brush(rgb(0xf5, 0xf7, 0xfa))))
+                .set(properties.border, Some(brush(rgb(0x52, 0x61, 0x73))))
+                .set(properties.border_width, 1.0)
+                .set(properties.corner_radius, 8.0)
+                .build(),
+        )
+        .build()
+}
+
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }

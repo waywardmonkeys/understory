@@ -4,20 +4,24 @@
 //! Open widget behavior attached to semantic elements.
 
 use alloc::{string::String, vec::Vec};
-use core::any::Any;
+use core::{any::Any, cell::Cell, num::NonZeroU64};
 
-use kurbo::{Insets, Rect, Size};
+use kurbo::{Insets, Point, Rect, Size};
+use parley::PlainEditor;
 use ui_events::keyboard::{Key, KeyState, KeyboardEvent, NamedKey};
-use ui_events::pointer::PointerEvent;
+use ui_events::pointer::{PointerButton, PointerEvent};
 use ui_input_state::InputState;
 use understory_responder::types::{Outcome, Phase};
 use understory_style::PseudoClassId;
-use understory_timing::TimerId;
+use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerQueue, TimerRepeat};
 
 use crate::{
     ElementId, ElementKind, PresentationNode, PresentationNodeId, PresentationTree, ROW_PART,
-    TOGGLE_THUMB_SLOT, TOGGLE_TRACK_SLOT, TemplateLayout, TemplateSlotLayout, TextContent, Ui,
+    TEXT_CARET_PART, TEXT_SELECTION_PART, TOGGLE_THUMB_SLOT, TOGGLE_TRACK_SLOT, TemplateLayout,
+    TemplateSlotLayout, TextContent, TextSystem, Ui,
 };
+
+const TEXT_INPUT_BLINK_INTERVAL: TimerDuration = 500_000_000;
 
 /// Behavior attached to a semantic element.
 ///
@@ -33,7 +37,7 @@ pub trait Widget: Any + core::fmt::Debug {
 
     /// Emits laid-out presentation nodes for this widget.
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -72,6 +76,11 @@ pub trait Widget: Any + core::fmt::Debug {
         Outcome::Continue
     }
 
+    /// Handles a focus change for this widget.
+    fn focus_event(&mut self, _cx: &mut FocusEventCx<'_>, _focused: bool) -> Outcome {
+        Outcome::Continue
+    }
+
     /// Activates the widget's primary action.
     ///
     /// Returns `true` when activation changed retained widget state.
@@ -90,28 +99,34 @@ pub trait Widget: Any + core::fmt::Debug {
 }
 
 /// Per-widget context for a routed pointer event.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PointerEventCx<'a> {
     element: ElementId,
     phase: Phase,
     clicked: bool,
     input: &'a InputState,
+    text: &'a mut TextSystem,
+    timers: &'a mut TimerQueue<ElementId>,
     activate_requested: bool,
     changed: bool,
 }
 
 impl<'a> PointerEventCx<'a> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         element: ElementId,
         phase: Phase,
         clicked: bool,
         input: &'a InputState,
+        text: &'a mut TextSystem,
+        timers: &'a mut TimerQueue<ElementId>,
     ) -> Self {
         Self {
             element,
             phase,
             clicked,
             input,
+            text,
+            timers,
             activate_requested: false,
             changed: false,
         }
@@ -147,6 +162,26 @@ impl<'a> PointerEventCx<'a> {
         self.input
     }
 
+    /// Returns the shared text system for text editing operations.
+    pub fn text(&mut self) -> &mut TextSystem {
+        self.text
+    }
+
+    /// Schedules a timer targeted at the receiving widget.
+    pub fn schedule_timer(
+        &mut self,
+        now: TimerInstant,
+        delay: TimerDuration,
+        repeat: TimerRepeat,
+    ) -> TimerId {
+        self.timers.schedule(self.element, now, delay, repeat)
+    }
+
+    /// Cancels a timer previously scheduled for a widget.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        self.timers.cancel(timer)
+    }
+
     /// Requests primary activation after the widget handler returns.
     pub fn activate(&mut self) {
         self.activate_requested = true;
@@ -170,11 +205,13 @@ impl<'a> PointerEventCx<'a> {
 }
 
 /// Per-widget context for a routed keyboard event.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct KeyboardEventCx<'a> {
     element: ElementId,
     phase: Phase,
     input: &'a InputState,
+    text: &'a mut TextSystem,
+    timers: &'a mut TimerQueue<ElementId>,
     activate_requested: bool,
     changed: bool,
 }
@@ -185,6 +222,62 @@ pub struct TimerEventCx {
     element: ElementId,
     changed: bool,
     rearm: bool,
+}
+
+/// Per-widget context for focus changes.
+#[derive(Debug)]
+pub struct FocusEventCx<'a> {
+    element: ElementId,
+    now: Option<TimerInstant>,
+    timers: &'a mut TimerQueue<ElementId>,
+    changed: bool,
+}
+
+impl<'a> FocusEventCx<'a> {
+    pub(crate) const fn new(
+        element: ElementId,
+        now: Option<TimerInstant>,
+        timers: &'a mut TimerQueue<ElementId>,
+    ) -> Self {
+        Self {
+            element,
+            now,
+            timers,
+            changed: false,
+        }
+    }
+
+    /// Returns the element receiving the focus change.
+    #[must_use]
+    pub const fn element(&self) -> ElementId {
+        self.element
+    }
+
+    /// Returns the host timestamp associated with this focus change, if supplied.
+    #[must_use]
+    pub const fn now(&self) -> Option<TimerInstant> {
+        self.now
+    }
+
+    /// Schedules a timer targeted at the receiving widget when a timestamp is available.
+    pub fn schedule_timer(&mut self, delay: TimerDuration, repeat: TimerRepeat) -> Option<TimerId> {
+        self.now
+            .map(|now| self.timers.schedule(self.element, now, delay, repeat))
+    }
+
+    /// Cancels a timer previously scheduled for a widget.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        self.timers.cancel(timer)
+    }
+
+    /// Marks the receiving widget as changed.
+    pub fn mark_changed(&mut self) {
+        self.changed = true;
+    }
+
+    pub(crate) const fn changed(&self) -> bool {
+        self.changed
+    }
 }
 
 impl TimerEventCx {
@@ -222,11 +315,19 @@ impl TimerEventCx {
 }
 
 impl<'a> KeyboardEventCx<'a> {
-    pub(crate) const fn new(element: ElementId, phase: Phase, input: &'a InputState) -> Self {
+    pub(crate) fn new(
+        element: ElementId,
+        phase: Phase,
+        input: &'a InputState,
+        text: &'a mut TextSystem,
+        timers: &'a mut TimerQueue<ElementId>,
+    ) -> Self {
         Self {
             element,
             phase,
             input,
+            text,
+            timers,
             activate_requested: false,
             changed: false,
         }
@@ -254,6 +355,26 @@ impl<'a> KeyboardEventCx<'a> {
     #[must_use]
     pub const fn input(&self) -> &InputState {
         self.input
+    }
+
+    /// Returns the shared text system for text editing operations.
+    pub fn text(&mut self) -> &mut TextSystem {
+        self.text
+    }
+
+    /// Schedules a timer targeted at the receiving widget.
+    pub fn schedule_timer(
+        &mut self,
+        now: TimerInstant,
+        delay: TimerDuration,
+        repeat: TimerRepeat,
+    ) -> TimerId {
+        self.timers.schedule(self.element, now, delay, repeat)
+    }
+
+    /// Cancels a timer previously scheduled for a widget.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        self.timers.cancel(timer)
     }
 
     /// Requests primary activation after the widget handler returns.
@@ -335,7 +456,7 @@ impl Widget for Button {
     }
 
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -443,7 +564,7 @@ impl Widget for TextBlock {
     }
 
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -472,6 +593,364 @@ impl Widget for TextBlock {
         let subjects = values.into_retained_subjects();
         ui.retain_style_subjects(element, subjects);
         id
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Editable plain text input backed by Parley.
+pub struct TextInput {
+    editor: PlainEditor<peniko::Brush>,
+    cached_cursor_rect: Option<Rect>,
+    cached_selection_rects: Vec<Rect>,
+    last_content_width: Cell<Option<f32>>,
+    last_content_origin: Cell<Point>,
+    editor_layout_width: Option<f32>,
+    editor_text_style: Option<crate::TextStyle>,
+    placeholder: Option<TextContent>,
+    single_line: bool,
+    cursor_visible: bool,
+    blink_timer: Option<TimerId>,
+}
+
+impl core::fmt::Debug for TextInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TextInput")
+            .field("text_len", &self.editor.raw_text().len())
+            .field("selection_rects", &self.cached_selection_rects.len())
+            .field("placeholder", &self.placeholder)
+            .field("single_line", &self.single_line)
+            .field("cursor_visible", &self.cursor_visible)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TextInput {
+    /// Creates an empty text input.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            editor: PlainEditor::new(16.0),
+            cached_cursor_rect: None,
+            cached_selection_rects: Vec::new(),
+            last_content_width: Cell::new(None),
+            last_content_origin: Cell::new(Point::ORIGIN),
+            editor_layout_width: None,
+            editor_text_style: None,
+            placeholder: None,
+            single_line: true,
+            cursor_visible: true,
+            blink_timer: None,
+        }
+    }
+
+    /// Creates a text input with initial text.
+    #[must_use]
+    pub fn with_text(mut self, text: &str) -> Self {
+        self.set_text(text);
+        self
+    }
+
+    /// Returns the current committed text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        self.editor.raw_text()
+    }
+
+    /// Replaces the text buffer.
+    pub fn set_text(&mut self, text: &str) {
+        self.editor.set_text(text);
+    }
+
+    /// Sets placeholder text shown while the input is empty.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<TextContent>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Restricts editing to a single line.
+    #[must_use]
+    pub fn single_line(mut self, single_line: bool) -> Self {
+        self.single_line = single_line;
+        self
+    }
+
+    fn display_content(&self) -> Option<TextContent> {
+        if self.editor.raw_text().is_empty() {
+            self.placeholder.clone()
+        } else {
+            Some(TextContent::from(self.editor.raw_text()))
+        }
+    }
+
+    fn move_cursor_to_view_point(&mut self, point: Point, text: &mut TextSystem) {
+        let origin = self.last_content_origin.get();
+        let local_x = f64_to_f32(point.x - origin.x);
+        let local_y = f64_to_f32(point.y - origin.y);
+        text.with_plain_editor(&mut self.editor, |driver| {
+            driver.move_to_point(local_x, local_y);
+        });
+        self.cursor_visible = true;
+    }
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Widget for TextInput {
+    fn kind(&self) -> ElementKind {
+        ElementKind::TEXT_INPUT
+    }
+
+    fn measure(&self, ui: &mut Ui, element: ElementId, available: Size) -> Size {
+        let props = ui.properties();
+        let padding = ui.resolve::<Insets>(element, props.padding);
+        let min_width = ui.resolve::<f64>(element, props.min_width).max(160.0);
+        let text_style = ui.resolve_text_style(element);
+        let max_text_width = crate::text::text_width_f32(available.width - padding.x_value());
+        let content = self
+            .display_content()
+            .unwrap_or_else(|| TextContent::from(" "));
+        let content_size = ui.measure_text(&content, &text_style, Some(max_text_width));
+        Size::new(
+            (content_size.width + padding.x_value()).max(min_width),
+            content_size.height + padding.y_value(),
+        )
+    }
+
+    fn present(
+        &mut self,
+        ui: &mut Ui,
+        tree: &mut PresentationTree,
+        parent: PresentationNodeId,
+        element: ElementId,
+        bounds: Rect,
+    ) -> PresentationNodeId {
+        let props = ui.properties();
+        let padding = ui.resolve::<Insets>(element, props.padding);
+        let text_style = ui.resolve_text_style(element);
+        let max_text_width = crate::text::text_width_f32(bounds.width() - padding.x_value());
+        let content = self.display_content();
+        let content_width = crate::text::text_width_f32(bounds.width() - padding.x_value());
+        let editor_content_size = if self.editor_layout_width == Some(content_width)
+            && self.editor_text_style.as_ref() == Some(&text_style)
+        {
+            ui.plain_editor_layout_size(&mut self.editor)
+        } else {
+            self.editor_layout_width = Some(content_width);
+            self.editor_text_style = Some(text_style.clone());
+            ui.refresh_plain_editor_layout(&mut self.editor, content_width, &text_style)
+        };
+        let content_size = if self.editor.raw_text().is_empty() {
+            content.as_ref().map_or(Size::ZERO, |content| {
+                ui.measure_text(content, &text_style, Some(max_text_width))
+            })
+        } else {
+            editor_content_size
+        };
+        let content_bounds = Rect::from_origin_size(
+            (bounds.x0 + padding.x0, bounds.y0 + padding.y0),
+            content_size,
+        );
+        self.last_content_width.set(Some(content_width));
+        self.last_content_origin.set(content_bounds.origin());
+        self.cached_cursor_rect = self
+            .editor
+            .cursor_geometry(2.0)
+            .map(|rect| Rect::new(rect.x0, rect.y0, rect.x1, rect.y1));
+        let mut selection_rects = Vec::new();
+        self.editor.selection_geometry_with(|rect, _line| {
+            selection_rects.push(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1));
+        });
+        self.cached_selection_rects = selection_rects;
+
+        let template = ui.resolve(element, props.text_input_template);
+        let mut values = ui.template_values(element, content);
+        let id = crate::template::instantiate_template(
+            tree,
+            parent,
+            element,
+            &template,
+            TemplateLayout::new(bounds, content_bounds),
+            &mut values,
+        );
+        let focused = ui.focused() == Some(element);
+        let selection_brush =
+            peniko::Brush::Solid(peniko::Color::from_rgba8(0x67, 0x9c, 0xff, 0x66));
+        for selection in &self.cached_selection_rects {
+            let mut node = PresentationNode::new(
+                element,
+                TEXT_SELECTION_PART,
+                *selection + content_bounds.origin().to_vec2(),
+            );
+            node.background = Some(selection_brush.clone());
+            tree.push_child(id, node);
+        }
+        if focused
+            && self.cursor_visible
+            && let Some(cursor) = self.cached_cursor_rect
+        {
+            let mut node = PresentationNode::new(
+                element,
+                TEXT_CARET_PART,
+                cursor + content_bounds.origin().to_vec2(),
+            );
+            node.background = ui.resolve::<Option<peniko::Brush>>(element, props.foreground);
+            tree.push_child(id, node);
+        }
+        let subjects = values.into_retained_subjects();
+        ui.retain_style_subjects(element, subjects);
+        id
+    }
+
+    fn hit_testable(&self) -> bool {
+        true
+    }
+
+    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx<'_>, event: &KeyboardEvent) -> Outcome {
+        if !cx.is_target() || event.state != KeyState::Down || event.is_composing {
+            return Outcome::Continue;
+        }
+
+        let action_modifier = event.modifiers.ctrl() || event.modifiers.meta();
+        let changed = cx
+            .text()
+            .with_plain_editor(&mut self.editor, |driver| match &event.key {
+                Key::Character(text) if action_modifier && text.eq_ignore_ascii_case("a") => {
+                    driver.select_all();
+                    true
+                }
+                Key::Character(text) if !action_modifier => {
+                    if self.single_line && (text.contains('\n') || text.contains('\r')) {
+                        false
+                    } else {
+                        driver.insert_or_replace_selection(text);
+                        true
+                    }
+                }
+                Key::Named(NamedKey::Enter) if !self.single_line => {
+                    driver.insert_or_replace_selection("\n");
+                    true
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if action_modifier {
+                        driver.backdelete_word();
+                    } else {
+                        driver.backdelete();
+                    }
+                    true
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if action_modifier {
+                        driver.delete_word();
+                    } else {
+                        driver.delete();
+                    }
+                    true
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if event.modifiers.shift() {
+                        if action_modifier {
+                            driver.select_word_left();
+                        } else {
+                            driver.select_left();
+                        }
+                    } else if action_modifier {
+                        driver.move_word_left();
+                    } else {
+                        driver.move_left();
+                    }
+                    true
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if event.modifiers.shift() {
+                        if action_modifier {
+                            driver.select_word_right();
+                        } else {
+                            driver.select_right();
+                        }
+                    } else if action_modifier {
+                        driver.move_word_right();
+                    } else {
+                        driver.move_right();
+                    }
+                    true
+                }
+                Key::Named(NamedKey::Home) => {
+                    if event.modifiers.shift() {
+                        driver.select_to_line_start();
+                    } else {
+                        driver.move_to_line_start();
+                    }
+                    true
+                }
+                Key::Named(NamedKey::End) => {
+                    if event.modifiers.shift() {
+                        driver.select_to_line_end();
+                    } else {
+                        driver.move_to_line_end();
+                    }
+                    true
+                }
+                _ => false,
+            });
+        if changed {
+            self.cursor_visible = true;
+            cx.mark_changed();
+        }
+        Outcome::Continue
+    }
+
+    fn pointer_event(&mut self, cx: &mut PointerEventCx<'_>, event: &PointerEvent) -> Outcome {
+        let PointerEvent::Down(button) = event else {
+            return Outcome::Continue;
+        };
+        if !cx.is_target() || button.button != Some(PointerButton::Primary) {
+            return Outcome::Continue;
+        }
+        self.move_cursor_to_view_point(button.state.logical_point(), cx.text());
+        cx.mark_changed();
+        Outcome::Continue
+    }
+
+    fn timer_event(&mut self, cx: &mut TimerEventCx, timer: TimerId) -> Outcome {
+        if self.blink_timer != Some(timer) {
+            cx.cancel_rearm();
+            return Outcome::Continue;
+        }
+        self.cursor_visible = !self.cursor_visible;
+        cx.mark_changed();
+        Outcome::Continue
+    }
+
+    fn focus_event(&mut self, cx: &mut FocusEventCx<'_>, focused: bool) -> Outcome {
+        if focused {
+            self.cursor_visible = true;
+            if self.blink_timer.is_none() {
+                let interval =
+                    NonZeroU64::new(TEXT_INPUT_BLINK_INTERVAL).expect("blink interval is nonzero");
+                self.blink_timer =
+                    cx.schedule_timer(TEXT_INPUT_BLINK_INTERVAL, TimerRepeat::coalescing(interval));
+            }
+            cx.mark_changed();
+        } else {
+            if let Some(timer) = self.blink_timer.take() {
+                let _ = cx.cancel_timer(timer);
+            }
+            self.cursor_visible = true;
+            cx.mark_changed();
+        }
+        Outcome::Continue
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -522,7 +1001,7 @@ impl Widget for Panel {
     }
 
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -604,7 +1083,7 @@ impl Widget for Row {
     }
 
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -717,7 +1196,7 @@ impl Widget for Toggle {
     }
 
     fn present(
-        &self,
+        &mut self,
         ui: &mut Ui,
         tree: &mut PresentationTree,
         parent: PresentationNodeId,
@@ -822,6 +1301,14 @@ impl Widget for Toggle {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Pointer coordinates passed to Parley are clamped to the f32 range used by its editor API."
+)]
+fn f64_to_f32(value: f64) -> f32 {
+    value.max(f64::from(f32::MIN)).min(f64::from(f32::MAX)) as f32
 }
 
 impl ElementKind {

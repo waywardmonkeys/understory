@@ -41,8 +41,9 @@ use crate::template::{TemplateBinding, TemplateValueSource};
 use crate::{
     ARRANGE, AppendSpec, Button, ElementId, ElementKind, ElementState, MEASURE, Panel,
     PresentationNode, PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE,
-    TemplateSlot, TextBlock, TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
-    widget::{KeyboardEventCx, PointerEventCx, TimerEventCx, Widget},
+    TemplateSlot, TextBlock, TextContent, TextInput, TextStyle, TextSystem, Toggle, UiProperties,
+    VISUAL,
+    widget::{FocusEventCx, KeyboardEventCx, PointerEventCx, TimerEventCx, Widget},
 };
 
 /// Retained semantic UI runtime.
@@ -56,13 +57,11 @@ pub struct Ui {
     properties: UiProperties,
     theme: Theme,
     invalidation: InvalidationTracker<ElementId>,
-    text: TextSystem,
+    services: UiServices,
     hover: HoverState<ElementId>,
     clicks: ClickState<ElementId>,
     pressed: Option<ElementId>,
     focused: Option<ElementId>,
-    input: InputState,
-    timers: TimerQueue<ElementId>,
     responder: ResponderState,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
@@ -71,6 +70,30 @@ pub struct Ui {
     scene: record::Scene,
     scene_scale_factor: f64,
     scene_valid: bool,
+}
+
+#[derive(Debug)]
+struct UiServices {
+    input: InputState,
+    text: TextSystem,
+    timers: TimerQueue<ElementId>,
+}
+
+impl UiServices {
+    fn new() -> Self {
+        Self {
+            input: InputState::default(),
+            text: TextSystem::new(),
+            timers: TimerQueue::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EventEffect {
+    element: ElementId,
+    changed: bool,
+    activate_requested: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -335,13 +358,11 @@ impl Ui {
             properties,
             theme,
             invalidation,
-            text: TextSystem::new(),
+            services: UiServices::new(),
             hover: HoverState::new(),
             clicks: ClickState::new(),
             pressed: None,
             focused: None,
-            input: InputState::default(),
-            timers: TimerQueue::new(),
             responder: ResponderState::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
@@ -406,6 +427,11 @@ impl Ui {
         content: impl Into<TextContent>,
     ) -> ElementId {
         self.append(parent, TextBlock::new(content))
+    }
+
+    /// Adds a text input under `parent`.
+    pub fn add_text_input(&mut self, parent: ElementId) -> ElementId {
+        self.append(parent, TextInput::new())
     }
 
     /// Adds a panel under `parent`.
@@ -529,31 +555,50 @@ impl Ui {
     /// Returns `true` when focus changed. Disabled elements and elements
     /// without widgets are ignored for now.
     pub fn focus(&mut self, id: ElementId) -> bool {
+        self.focus_impl(id, None)
+    }
+
+    /// Sets keyboard focus to `id` with a host timestamp for timer-driven widgets.
+    ///
+    /// Use this when focus originates from a timestamped input event and focused
+    /// widgets should be allowed to start timers such as caret blinking.
+    pub fn focus_at(&mut self, id: ElementId, now: TimerInstant) -> bool {
+        self.focus_impl(id, Some(now))
+    }
+
+    fn focus_impl(&mut self, id: ElementId, now: Option<TimerInstant>) -> bool {
         if !self.element_focusable(id) || self.focused == Some(id) {
             return false;
         }
+        let previous = self.focused;
         self.focused = Some(id);
         self.responder.router.set_focus(Some(id));
+        if let Some(previous) = previous {
+            self.dispatch_focus_event(previous, false, now);
+            self.mark_channels(previous, VISUAL.into_set());
+        }
+        self.dispatch_focus_event(id, true, now);
+        self.mark_channels(id, VISUAL.into_set());
         true
     }
 
     /// Returns retained frame-oriented input state.
     #[must_use]
     pub const fn input(&self) -> &InputState {
-        &self.input
+        &self.services.input
     }
 
     /// Clears per-frame input transitions.
     ///
     /// Call this once the host has completed its frame/update pass.
     pub fn clear_input_frame(&mut self) {
-        self.input.clear_frame();
+        self.services.input.clear_frame();
     }
 
     /// Returns the next pending timer deadline, if any.
     #[must_use]
     pub fn next_timer_deadline(&self) -> Option<TimerInstant> {
-        self.timers.next_deadline()
+        self.services.timers.next_deadline()
     }
 
     /// Schedules a one-shot timer targeted at an element.
@@ -566,7 +611,7 @@ impl Ui {
         delay: TimerDuration,
     ) -> TimerId {
         assert!(self.is_alive(target), "timer target element must be live");
-        self.timers.schedule_once(target, now, delay)
+        self.services.timers.schedule_once(target, now, delay)
     }
 
     /// Schedules a timer with an explicit repeat policy.
@@ -578,14 +623,14 @@ impl Ui {
         repeat: TimerRepeat,
     ) -> TimerId {
         assert!(self.is_alive(target), "timer target element must be live");
-        self.timers.schedule(target, now, delay, repeat)
+        self.services.timers.schedule(target, now, delay, repeat)
     }
 
     /// Cancels a pending timer.
     ///
     /// Returns `true` when a pending timer was removed.
     pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
-        self.timers.cancel(timer)
+        self.services.timers.cancel(timer)
     }
 
     /// Delivers all timers due at or before `now`.
@@ -594,7 +639,7 @@ impl Ui {
     pub fn timer_event(&mut self, now: TimerInstant) -> bool {
         let mut changed = false;
         let mut rearm = Vec::new();
-        while let Some(timer) = self.timers.pop_expired(now) {
+        while let Some(timer) = self.services.timers.pop_expired(now) {
             let target = *timer.target();
             let should_rearm = self.dispatch_timer_event(target, timer.id(), &mut changed);
             if should_rearm {
@@ -602,7 +647,7 @@ impl Ui {
             }
         }
         for timer in rearm {
-            self.timers.rearm(timer);
+            self.services.timers.rearm(timer);
         }
         changed
     }
@@ -611,7 +656,8 @@ impl Ui {
     ///
     /// Returns `true` when the event changed retained state or activated a widget.
     pub fn pointer_event(&mut self, viewport: Size, event: &PointerEvent) -> bool {
-        self.input
+        self.services
+            .input
             .primary_pointer
             .process_pointer_event(event.clone());
 
@@ -652,7 +698,10 @@ impl Ui {
     ///
     /// Returns `true` when the event changed retained state or activated a widget.
     pub fn keyboard_event(&mut self, event: &KeyboardEvent) -> bool {
-        self.input.keyboard.process_keyboard_event(event.clone());
+        self.services
+            .input
+            .keyboard
+            .process_keyboard_event(event.clone());
 
         let Some(focused) = self.focused.filter(|id| self.element_focusable(*id)) else {
             return false;
@@ -1122,7 +1171,7 @@ impl Ui {
         {
             self.scene = crate::lower_presentation_with_scale(
                 &self.presentation,
-                &mut self.text,
+                &mut self.services.text,
                 scale_factor,
             );
             self.scene_scale_factor = scale_factor;
@@ -1188,7 +1237,27 @@ impl Ui {
         style: &TextStyle,
         max_width: Option<f32>,
     ) -> Size {
-        self.text.measure_with_style(content, style, max_width)
+        self.services
+            .text
+            .measure_with_style(content, style, max_width)
+    }
+
+    pub(crate) fn refresh_plain_editor_layout(
+        &mut self,
+        editor: &mut parley::PlainEditor<Brush>,
+        width: f32,
+        style: &TextStyle,
+    ) -> Size {
+        self.services
+            .text
+            .refresh_plain_editor_layout(editor, style, width)
+    }
+
+    pub(crate) fn plain_editor_layout_size(
+        &mut self,
+        editor: &mut parley::PlainEditor<Brush>,
+    ) -> Size {
+        self.services.text.plain_editor_layout_size(editor)
     }
 
     pub(crate) fn resolve_text_style(&self, element: ElementId) -> TextStyle {
@@ -1317,7 +1386,7 @@ impl Ui {
         bounds: Rect,
     ) -> PresentationNodeId {
         self.refresh_retained_owner_style_state(element);
-        let widget = self.take_widget(element);
+        let mut widget = self.take_widget(element);
         let id = widget.present(self, tree, parent, element, bounds);
         self.put_widget(element, widget);
         id
@@ -1394,7 +1463,7 @@ impl Ui {
         let hover_route = self.hover_route_from_hit(hit.as_ref());
         let mut changed = self.apply_hover_route(&hover_route);
         if let Some(target) = hit.as_ref().map(|target| target.element) {
-            changed |= self.focus(target);
+            changed |= self.focus_at(target, timestamp);
             self.clicks.on_down(
                 pointer_id(pointer),
                 Some(primary_button()),
@@ -1518,10 +1587,16 @@ impl Ui {
         event: &PointerEvent,
         clicked: Option<ElementId>,
     ) -> bool {
-        let input = core::mem::take(&mut self.input);
+        let elements = &mut self.elements;
+        let services = &mut self.services;
+        let input = &services.input;
+        let text = &mut services.text;
+        let timers = &mut services.timers;
+        let mut effects = Vec::new();
         let mut changed = false;
         dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
-            if self.elements[dispatch.node.index()].widget.is_none() {
+            let element = &mut elements[dispatch.node.index()];
+            if element.widget.is_none() {
                 return Outcome::Continue;
             }
 
@@ -1529,22 +1604,29 @@ impl Ui {
                 dispatch.node,
                 dispatch.phase,
                 clicked == Some(dispatch.node) && matches!(dispatch.phase, Phase::Target),
-                &input,
+                input,
+                &mut *text,
+                &mut *timers,
             );
-            let mut widget = self.take_widget(dispatch.node);
+            let mut widget = element
+                .widget
+                .take()
+                .expect("non-root elements should have widgets");
             let outcome = widget.pointer_event(&mut cx, event);
-            self.put_widget(dispatch.node, widget);
+            element.widget = Some(widget);
             if cx.changed() {
-                self.restyle_or_mark_style(dispatch.node);
-                self.mark_channels(dispatch.node, MEASURE.into_set());
                 *changed = true;
             }
-            if cx.activate_requested() {
-                *changed |= self.activate(dispatch.node);
-            }
+            effects.push(EventEffect {
+                element: dispatch.node,
+                changed: cx.changed(),
+                activate_requested: cx.activate_requested(),
+            });
             outcome
         });
-        self.input = input;
+        for effect in effects {
+            changed |= self.apply_event_effect(effect);
+        }
         changed
     }
 
@@ -1553,29 +1635,87 @@ impl Ui {
         dispatches: &[ResponderDispatch],
         event: &KeyboardEvent,
     ) -> bool {
-        let input = core::mem::take(&mut self.input);
+        let elements = &mut self.elements;
+        let services = &mut self.services;
+        let input = &services.input;
+        let text = &mut services.text;
+        let timers = &mut services.timers;
+        let mut effects = Vec::new();
         let mut changed = false;
         dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
-            if self.elements[dispatch.node.index()].widget.is_none() {
+            let element = &mut elements[dispatch.node.index()];
+            if element.widget.is_none() {
                 return Outcome::Continue;
             }
 
-            let mut cx = KeyboardEventCx::new(dispatch.node, dispatch.phase, &input);
-            let mut widget = self.take_widget(dispatch.node);
+            let mut cx = KeyboardEventCx::new(
+                dispatch.node,
+                dispatch.phase,
+                input,
+                &mut *text,
+                &mut *timers,
+            );
+            let mut widget = element
+                .widget
+                .take()
+                .expect("non-root elements should have widgets");
             let outcome = widget.keyboard_event(&mut cx, event);
-            self.put_widget(dispatch.node, widget);
+            element.widget = Some(widget);
             if cx.changed() {
-                self.restyle_or_mark_style(dispatch.node);
-                self.mark_channels(dispatch.node, MEASURE.into_set());
                 *changed = true;
             }
-            if cx.activate_requested() {
-                *changed |= self.activate(dispatch.node);
-            }
+            effects.push(EventEffect {
+                element: dispatch.node,
+                changed: cx.changed(),
+                activate_requested: cx.activate_requested(),
+            });
             outcome
         });
-        self.input = input;
+        for effect in effects {
+            changed |= self.apply_event_effect(effect);
+        }
         changed
+    }
+
+    fn apply_event_effect(&mut self, effect: EventEffect) -> bool {
+        let mut changed = false;
+        if effect.changed {
+            self.restyle_or_mark_style(effect.element);
+            self.mark_channels(effect.element, MEASURE.into_set());
+            changed = true;
+        }
+        if effect.activate_requested {
+            changed |= self.activate(effect.element);
+        }
+        changed
+    }
+
+    fn dispatch_focus_event(
+        &mut self,
+        target: ElementId,
+        focused: bool,
+        now: Option<TimerInstant>,
+    ) -> bool {
+        if !self.is_alive(target) || self.elements[target.index()].widget.is_none() {
+            return false;
+        }
+
+        let changed = {
+            let mut cx = FocusEventCx::new(target, now, &mut self.services.timers);
+            let mut widget = self.elements[target.index()]
+                .widget
+                .take()
+                .expect("non-root elements should have widgets");
+            let _outcome = widget.focus_event(&mut cx, focused);
+            self.elements[target.index()].widget = Some(widget);
+            cx.changed()
+        };
+        if changed {
+            self.restyle_or_mark_style(target);
+            self.mark_channels(target, MEASURE.into_set());
+            return true;
+        }
+        false
     }
 
     fn dispatch_timer_event(
@@ -1770,7 +1910,7 @@ mod tests {
         }
 
         fn present(
-            &self,
+            &mut self,
             _ui: &mut Ui,
             tree: &mut PresentationTree,
             parent: PresentationNodeId,
@@ -1805,7 +1945,7 @@ mod tests {
         }
 
         fn present(
-            &self,
+            &mut self,
             _ui: &mut Ui,
             tree: &mut PresentationTree,
             parent: PresentationNodeId,
@@ -1860,7 +2000,7 @@ mod tests {
         }
 
         fn present(
-            &self,
+            &mut self,
             _ui: &mut Ui,
             tree: &mut PresentationTree,
             parent: PresentationNodeId,
@@ -1913,7 +2053,7 @@ mod tests {
         }
 
         fn present(
-            &self,
+            &mut self,
             _ui: &mut Ui,
             tree: &mut PresentationTree,
             parent: PresentationNodeId,
@@ -2061,6 +2201,142 @@ mod tests {
         assert_eq!(ui.kind(id), Some(ElementKind::TEXT_BLOCK));
         assert!(text_matches);
         assert_eq!(font_size, 22.0);
+    }
+
+    #[test]
+    fn text_input_keyboard_editing_updates_text_and_presentation() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(260.0, 80.0);
+        let id = ui.add_text_input(ui.root());
+
+        assert!(ui.focus(id));
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Character("a".into()),
+            Code::KeyA,
+        )));
+
+        assert_eq!(ui.widget::<TextInput>(id).map(TextInput::text), Some("a"));
+        let presenter_text = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::CONTENT_PRESENTER_PART)
+            .and_then(|node| node.text.as_ref())
+            .map(TextContent::as_str);
+        assert_eq!(presenter_text, Some("a"));
+    }
+
+    #[test]
+    fn text_input_pointer_focus_schedules_blink_and_timer_toggles_caret() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(260.0, 80.0);
+        let id = ui.add_text_input(ui.root());
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::TEXT_INPUT_PART)
+            .map(|node| node.bounds)
+            .expect("text input should be presented");
+
+        assert!(ui.pointer_event(viewport, &pointer_down(bounds.center())));
+        assert_eq!(ui.focused(), Some(id));
+        assert_eq!(ui.next_timer_deadline(), Some(500_000_000));
+        assert!(
+            ui.presentation(viewport)
+                .nodes()
+                .iter()
+                .any(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+        );
+
+        assert!(ui.timer_event(500_000_000));
+        assert!(
+            !ui.presentation(viewport)
+                .nodes()
+                .iter()
+                .any(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+        );
+    }
+
+    #[test]
+    fn text_input_caret_geometry_uses_resolved_text_style() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(360.0, 100.0);
+        let id = ui.add_text_input(ui.root());
+        ui.set_local(id, ui.properties().font_size, 28.0);
+
+        assert!(ui.focus(id));
+        for (key, code) in [
+            (Key::Character("m".into()), Code::KeyM),
+            (Key::Character("m".into()), Code::KeyM),
+            (Key::Character("m".into()), Code::KeyM),
+            (Key::Character("m".into()), Code::KeyM),
+        ] {
+            assert!(ui.keyboard_event(&KeyboardEvent::key_down(key, code)));
+        }
+        let text_style = ui.resolve_text_style(id);
+        let expected_text_width = ui
+            .measure_text(&TextContent::from("mmmm"), &text_style, None)
+            .width;
+
+        let tree = ui.presentation(viewport);
+        let content_bounds = tree
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::CONTENT_PRESENTER_PART)
+            .map(|node| node.bounds)
+            .expect("text input should emit presented text");
+        let caret_bounds = tree
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .map(|node| node.bounds)
+            .expect("focused text input should emit a caret");
+
+        assert!(
+            ((caret_bounds.x0 - content_bounds.x0) - expected_text_width).abs() < 1.0,
+            "caret offset {} should align with measured text width {}",
+            caret_bounds.x0 - content_bounds.x0,
+            expected_text_width
+        );
+    }
+
+    #[test]
+    fn text_input_cursor_movement_invalidates_presentation() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(260.0, 80.0);
+        let id = ui.add_text_input(ui.root());
+
+        assert!(ui.focus(id));
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Character("a".into()),
+            Code::KeyA,
+        )));
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Character("b".into()),
+            Code::KeyB,
+        )));
+        let end_caret_x = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .map(|node| node.bounds.x0)
+            .expect("focused text input should emit a caret");
+
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Named(NamedKey::ArrowLeft),
+            Code::ArrowLeft,
+        )));
+        let moved_caret_x = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.source == id && node.kind == crate::TEXT_CARET_PART)
+            .map(|node| node.bounds.x0)
+            .expect("focused text input should emit a caret");
+
+        assert!(moved_caret_x < end_caret_x);
     }
 
     #[test]
