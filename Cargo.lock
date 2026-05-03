@@ -1729,6 +1729,7 @@ dependencies = [
  "parley",
  "peniko",
  "ui-events",
+ "ui-input-state",
  "understory_box_tree",
  "understory_event_state",
  "understory_property",
@@ -2552,6 +2553,16 @@ dependencies = [
  "ui-events",
  "web-time",
  "winit",
+]
+
+[[package]]
+name = "ui-input-state"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cde8f999fcb8ac173153d5944036abd3d090648a485f4e7bba52541389f1c718"
+dependencies = [
+ "dpi",
+ "ui-events",
 ]
 
 [[package]]

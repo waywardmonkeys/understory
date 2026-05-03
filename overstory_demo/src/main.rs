@@ -265,6 +265,7 @@ impl RunState {
             .create_view(&TextureViewDescriptor::default());
         self.blit_to_surface(&output_view);
         output.present();
+        self.ui.clear_input_frame();
     }
 
     fn blit_to_surface(&self, output: &TextureView) {

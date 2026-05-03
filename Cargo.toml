@@ -49,6 +49,7 @@ peniko = { version = "0.6.0", default-features = false }
 pollster = "0.4.0"
 smallvec = { version = "1.13.2", default-features = false }
 ui-events = { version = "0.3.0", default-features = false, features = ["kurbo"] }
+ui-input-state = { version = "0.3.0", default-features = false }
 ui-events-winit = { version = "0.3.0", default-features = false }
 winit = "0.30.13"
 

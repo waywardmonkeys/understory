@@ -9,6 +9,7 @@ use core::any::Any;
 use kurbo::{Insets, Rect, Size};
 use ui_events::keyboard::{Key, KeyState, KeyboardEvent, NamedKey};
 use ui_events::pointer::PointerEvent;
+use ui_input_state::InputState;
 use understory_responder::types::{Outcome, Phase};
 use understory_style::PseudoClassId;
 
@@ -50,7 +51,7 @@ pub trait Widget: Any + core::fmt::Debug {
     /// The event is the raw `ui-events` pointer event supplied to [`Ui`](crate::Ui).
     /// `cx` carries Overstory routing context such as responder phase and whether
     /// this target received a recognized click.
-    fn pointer_event(&mut self, _cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+    fn pointer_event(&mut self, _cx: &mut PointerEventCx<'_>, _event: &PointerEvent) -> Outcome {
         Outcome::Continue
     }
 
@@ -58,7 +59,7 @@ pub trait Widget: Any + core::fmt::Debug {
     ///
     /// The event is the raw `ui-events` keyboard event supplied to [`Ui`](crate::Ui).
     /// `cx` carries Overstory routing context for the focused element.
-    fn keyboard_event(&mut self, _cx: &mut KeyboardEventCx, _event: &KeyboardEvent) -> Outcome {
+    fn keyboard_event(&mut self, _cx: &mut KeyboardEventCx<'_>, _event: &KeyboardEvent) -> Outcome {
         Outcome::Continue
     }
 
@@ -81,19 +82,26 @@ pub trait Widget: Any + core::fmt::Debug {
 
 /// Per-widget context for a routed pointer event.
 #[derive(Clone, Debug)]
-pub struct PointerEventCx {
+pub struct PointerEventCx<'a> {
     element: ElementId,
     phase: Phase,
     clicked: bool,
+    input: &'a InputState,
     activate_requested: bool,
 }
 
-impl PointerEventCx {
-    pub(crate) const fn new(element: ElementId, phase: Phase, clicked: bool) -> Self {
+impl<'a> PointerEventCx<'a> {
+    pub(crate) const fn new(
+        element: ElementId,
+        phase: Phase,
+        clicked: bool,
+        input: &'a InputState,
+    ) -> Self {
         Self {
             element,
             phase,
             clicked,
+            input,
             activate_requested: false,
         }
     }
@@ -122,6 +130,12 @@ impl PointerEventCx {
         self.clicked
     }
 
+    /// Returns frame-oriented input state at the time of dispatch.
+    #[must_use]
+    pub const fn input(&self) -> &InputState {
+        self.input
+    }
+
     /// Requests primary activation after the widget handler returns.
     pub fn activate(&mut self) {
         self.activate_requested = true;
@@ -134,17 +148,19 @@ impl PointerEventCx {
 
 /// Per-widget context for a routed keyboard event.
 #[derive(Clone, Debug)]
-pub struct KeyboardEventCx {
+pub struct KeyboardEventCx<'a> {
     element: ElementId,
     phase: Phase,
+    input: &'a InputState,
     activate_requested: bool,
 }
 
-impl KeyboardEventCx {
-    pub(crate) const fn new(element: ElementId, phase: Phase) -> Self {
+impl<'a> KeyboardEventCx<'a> {
+    pub(crate) const fn new(element: ElementId, phase: Phase, input: &'a InputState) -> Self {
         Self {
             element,
             phase,
+            input,
             activate_requested: false,
         }
     }
@@ -165,6 +181,12 @@ impl KeyboardEventCx {
     #[must_use]
     pub const fn is_target(&self) -> bool {
         matches!(self.phase, Phase::Target)
+    }
+
+    /// Returns frame-oriented input state at the time of dispatch.
+    #[must_use]
+    pub const fn input(&self) -> &InputState {
+        self.input
     }
 
     /// Requests primary activation after the widget handler returns.
@@ -273,14 +295,14 @@ impl Widget for Button {
         true
     }
 
-    fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+    fn pointer_event(&mut self, cx: &mut PointerEventCx<'_>, _event: &PointerEvent) -> Outcome {
         if cx.is_target() && cx.clicked() {
             cx.activate();
         }
         Outcome::Continue
     }
 
-    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx, event: &KeyboardEvent) -> Outcome {
+    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx<'_>, event: &KeyboardEvent) -> Outcome {
         if cx.is_target() && is_keyboard_activation(event) {
             cx.activate();
         }
@@ -694,14 +716,14 @@ impl Widget for Toggle {
         true
     }
 
-    fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+    fn pointer_event(&mut self, cx: &mut PointerEventCx<'_>, _event: &PointerEvent) -> Outcome {
         if cx.is_target() && cx.clicked() {
             cx.activate();
         }
         Outcome::Continue
     }
 
-    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx, event: &KeyboardEvent) -> Outcome {
+    fn keyboard_event(&mut self, cx: &mut KeyboardEventCx<'_>, event: &KeyboardEvent) -> Outcome {
         if cx.is_target() && is_keyboard_activation(event) {
             cx.activate();
         }

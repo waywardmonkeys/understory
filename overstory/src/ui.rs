@@ -13,6 +13,7 @@ use ui_events::keyboard::KeyboardEvent;
 use ui_events::pointer::{
     PointerButton, PointerButtonEvent, PointerEvent, PointerInfo, PointerUpdate,
 };
+use ui_input_state::InputState;
 use understory_box_tree::{
     LocalNode, NodeFlags, NodeId as BoxNodeId, QueryFilter, Tree as BoxTree,
 };
@@ -57,6 +58,7 @@ pub struct Ui {
     clicks: ClickState<ElementId>,
     pressed: Option<ElementId>,
     focused: Option<ElementId>,
+    input: InputState,
     responder: ResponderState,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
@@ -334,6 +336,7 @@ impl Ui {
             clicks: ClickState::new(),
             pressed: None,
             focused: None,
+            input: InputState::default(),
             responder: ResponderState::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
@@ -503,10 +506,27 @@ impl Ui {
         true
     }
 
+    /// Returns retained frame-oriented input state.
+    #[must_use]
+    pub const fn input(&self) -> &InputState {
+        &self.input
+    }
+
+    /// Clears per-frame input transitions.
+    ///
+    /// Call this once the host has completed its frame/update pass.
+    pub fn clear_input_frame(&mut self) {
+        self.input.clear_frame();
+    }
+
     /// Applies one `ui-events` pointer event to retained UI interaction state.
     ///
     /// Returns `true` when the event changed retained state or activated a widget.
     pub fn pointer_event(&mut self, viewport: Size, event: &PointerEvent) -> bool {
+        self.input
+            .primary_pointer
+            .process_pointer_event(event.clone());
+
         if !event.is_primary_pointer() {
             return false;
         }
@@ -544,6 +564,8 @@ impl Ui {
     ///
     /// Returns `true` when the event changed retained state or activated a widget.
     pub fn keyboard_event(&mut self, event: &KeyboardEvent) -> bool {
+        self.input.keyboard.process_keyboard_event(event.clone());
+
         let Some(focused) = self.focused.filter(|id| self.element_focusable(*id)) else {
             return false;
         };
@@ -1369,6 +1391,7 @@ impl Ui {
         event: &PointerEvent,
         clicked: Option<ElementId>,
     ) -> bool {
+        let input = core::mem::take(&mut self.input);
         let mut changed = false;
         dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
             if self.elements[dispatch.node.index()].widget.is_none() {
@@ -1379,6 +1402,7 @@ impl Ui {
                 dispatch.node,
                 dispatch.phase,
                 clicked == Some(dispatch.node) && matches!(dispatch.phase, Phase::Target),
+                &input,
             );
             let mut widget = self.take_widget(dispatch.node);
             let outcome = widget.pointer_event(&mut cx, event);
@@ -1388,6 +1412,7 @@ impl Ui {
             }
             outcome
         });
+        self.input = input;
         changed
     }
 
@@ -1396,13 +1421,14 @@ impl Ui {
         dispatches: &[ResponderDispatch],
         event: &KeyboardEvent,
     ) -> bool {
+        let input = core::mem::take(&mut self.input);
         let mut changed = false;
         dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
             if self.elements[dispatch.node.index()].widget.is_none() {
                 return Outcome::Continue;
             }
 
-            let mut cx = KeyboardEventCx::new(dispatch.node, dispatch.phase);
+            let mut cx = KeyboardEventCx::new(dispatch.node, dispatch.phase, &input);
             let mut widget = self.take_widget(dispatch.node);
             let outcome = widget.keyboard_event(&mut cx, event);
             self.put_widget(dispatch.node, widget);
@@ -1411,6 +1437,7 @@ impl Ui {
             }
             outcome
         });
+        self.input = input;
         changed
     }
 
@@ -1641,8 +1668,9 @@ mod tests {
             true
         }
 
-        fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+        fn pointer_event(&mut self, cx: &mut PointerEventCx<'_>, _event: &PointerEvent) -> Outcome {
             if cx.is_target() && cx.clicked() {
+                assert!(cx.input().primary_pointer.is_primary_just_released());
                 cx.activate();
             }
             Outcome::Continue
@@ -1951,6 +1979,44 @@ mod tests {
         )));
 
         assert!(ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
+    }
+
+    #[test]
+    fn input_state_tracks_and_clears_frame_transitions() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(240.0, 80.0);
+        let id = ui.add_toggle(ui.root(), "Input");
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.kind == crate::TOGGLE_PART)
+            .map(|node| node.bounds)
+            .expect("toggle should be presented");
+
+        assert!(ui.pointer_event(viewport, &pointer_down(bounds.center())));
+        assert!(ui.input().primary_pointer.is_primary_just_pressed());
+
+        ui.clear_input_frame();
+        assert!(!ui.input().primary_pointer.is_primary_just_pressed());
+
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Named(NamedKey::Enter),
+            Code::Enter,
+        )));
+        assert!(
+            ui.input()
+                .keyboard
+                .key_just_pressed(Key::Named(NamedKey::Enter))
+        );
+        assert!(ui.widget::<Toggle>(id).is_some_and(Toggle::checked));
+
+        ui.clear_input_frame();
+        assert!(
+            !ui.input()
+                .keyboard
+                .key_just_pressed(Key::Named(NamedKey::Enter))
+        );
     }
 
     fn primary_pointer() -> PointerInfo {
