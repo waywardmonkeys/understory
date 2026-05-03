@@ -1474,6 +1474,11 @@ impl Ui {
             let mut widget = self.take_widget(dispatch.node);
             let outcome = widget.pointer_event(&mut cx, event);
             self.put_widget(dispatch.node, widget);
+            if cx.changed() {
+                self.restyle_or_mark_style(dispatch.node);
+                self.mark_channels(dispatch.node, MEASURE.into_set());
+                *changed = true;
+            }
             if cx.activate_requested() {
                 *changed |= self.activate(dispatch.node);
             }
@@ -1499,6 +1504,11 @@ impl Ui {
             let mut widget = self.take_widget(dispatch.node);
             let outcome = widget.keyboard_event(&mut cx, event);
             self.put_widget(dispatch.node, widget);
+            if cx.changed() {
+                self.restyle_or_mark_style(dispatch.node);
+                self.mark_channels(dispatch.node, MEASURE.into_set());
+                *changed = true;
+            }
             if cx.activate_requested() {
                 *changed |= self.activate(dispatch.node);
             }
@@ -1753,6 +1763,59 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct KeyboardMutatingWidget {
+        width: f64,
+    }
+
+    impl Widget for KeyboardMutatingWidget {
+        fn kind(&self) -> ElementKind {
+            ElementKind::new(understory_style::TypeTag(902), "test-keyboard-mutating")
+        }
+
+        fn measure(&self, _ui: &mut Ui, _element: ElementId, _available: Size) -> Size {
+            Size::new(self.width, 12.0)
+        }
+
+        fn present(
+            &self,
+            _ui: &mut Ui,
+            tree: &mut PresentationTree,
+            parent: PresentationNodeId,
+            element: ElementId,
+            bounds: Rect,
+        ) -> PresentationNodeId {
+            const MUTATING_PART: crate::PartKind = crate::PartKind::new("test-keyboard-mutating");
+            tree.push_child(
+                parent,
+                PresentationNode::new(element, MUTATING_PART, bounds),
+            )
+        }
+
+        fn keyboard_event(
+            &mut self,
+            cx: &mut KeyboardEventCx<'_>,
+            event: &KeyboardEvent,
+        ) -> Outcome {
+            if cx.is_target()
+                && event.state == ui_events::keyboard::KeyState::Down
+                && matches!(&event.key, Key::Character(value) if value == "w")
+            {
+                self.width += 10.0;
+                cx.mark_changed();
+            }
+            Outcome::Continue
+        }
+
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+    }
+
     #[test]
     fn custom_widget_kind_measures_and_presents_without_core_enum_case() {
         let mut ui = Ui::new();
@@ -1807,6 +1870,24 @@ mod tests {
         assert!(ui.pointer_event(viewport, &pointer_up(point)));
 
         assert_eq!(*activations.borrow(), 1);
+    }
+
+    #[test]
+    fn widget_keyboard_event_can_mark_retained_state_changed() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(100.0, 100.0);
+        let id = ui.append(ui.root(), KeyboardMutatingWidget { width: 20.0 });
+
+        let initial_width = ui.presentation(viewport).nodes()[1].bounds.width();
+        assert_eq!(initial_width, 20.0);
+        assert!(ui.focus(id));
+        assert!(ui.keyboard_event(&KeyboardEvent::key_down(
+            Key::Character("w".into()),
+            Code::KeyW,
+        )));
+
+        let updated_width = ui.presentation(viewport).nodes()[1].bounds.width();
+        assert_eq!(updated_width, 30.0);
     }
 
     #[test]

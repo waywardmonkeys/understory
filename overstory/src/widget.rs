@@ -88,6 +88,7 @@ pub struct PointerEventCx<'a> {
     clicked: bool,
     input: &'a InputState,
     activate_requested: bool,
+    changed: bool,
 }
 
 impl<'a> PointerEventCx<'a> {
@@ -103,6 +104,7 @@ impl<'a> PointerEventCx<'a> {
             clicked,
             input,
             activate_requested: false,
+            changed: false,
         }
     }
 
@@ -141,8 +143,20 @@ impl<'a> PointerEventCx<'a> {
         self.activate_requested = true;
     }
 
+    /// Marks the receiving widget as changed.
+    ///
+    /// Use this when event handling mutates widget-owned state that can affect
+    /// selector state, measurement, arrangement, or visual output.
+    pub fn mark_changed(&mut self) {
+        self.changed = true;
+    }
+
     pub(crate) const fn activate_requested(&self) -> bool {
         self.activate_requested
+    }
+
+    pub(crate) const fn changed(&self) -> bool {
+        self.changed
     }
 }
 
@@ -153,6 +167,7 @@ pub struct KeyboardEventCx<'a> {
     phase: Phase,
     input: &'a InputState,
     activate_requested: bool,
+    changed: bool,
 }
 
 impl<'a> KeyboardEventCx<'a> {
@@ -162,6 +177,7 @@ impl<'a> KeyboardEventCx<'a> {
             phase,
             input,
             activate_requested: false,
+            changed: false,
         }
     }
 
@@ -194,8 +210,20 @@ impl<'a> KeyboardEventCx<'a> {
         self.activate_requested = true;
     }
 
+    /// Marks the receiving widget as changed.
+    ///
+    /// Use this when event handling mutates widget-owned state that can affect
+    /// selector state, measurement, arrangement, or visual output.
+    pub fn mark_changed(&mut self) {
+        self.changed = true;
+    }
+
     pub(crate) const fn activate_requested(&self) -> bool {
         self.activate_requested
+    }
+
+    pub(crate) const fn changed(&self) -> bool {
+        self.changed
     }
 }
 
