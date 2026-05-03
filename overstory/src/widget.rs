@@ -12,6 +12,7 @@ use ui_events::pointer::PointerEvent;
 use ui_input_state::InputState;
 use understory_responder::types::{Outcome, Phase};
 use understory_style::PseudoClassId;
+use understory_timing::TimerId;
 
 use crate::{
     ElementId, ElementKind, PresentationNode, PresentationNodeId, PresentationTree, ROW_PART,
@@ -60,6 +61,14 @@ pub trait Widget: Any + core::fmt::Debug {
     /// The event is the raw `ui-events` keyboard event supplied to [`Ui`](crate::Ui).
     /// `cx` carries Overstory routing context for the focused element.
     fn keyboard_event(&mut self, _cx: &mut KeyboardEventCx<'_>, _event: &KeyboardEvent) -> Outcome {
+        Outcome::Continue
+    }
+
+    /// Handles an expired timer owned by this widget.
+    ///
+    /// Widgets should compare `timer` with any currently stored timer id and
+    /// ignore stale deliveries.
+    fn timer_event(&mut self, _cx: &mut TimerEventCx, _timer: TimerId) -> Outcome {
         Outcome::Continue
     }
 
@@ -168,6 +177,48 @@ pub struct KeyboardEventCx<'a> {
     input: &'a InputState,
     activate_requested: bool,
     changed: bool,
+}
+
+/// Per-widget context for an expired timer.
+#[derive(Clone, Debug)]
+pub struct TimerEventCx {
+    element: ElementId,
+    changed: bool,
+    rearm: bool,
+}
+
+impl TimerEventCx {
+    pub(crate) const fn new(element: ElementId) -> Self {
+        Self {
+            element,
+            changed: false,
+            rearm: true,
+        }
+    }
+
+    /// Returns the element currently receiving the timer.
+    #[must_use]
+    pub const fn element(&self) -> ElementId {
+        self.element
+    }
+
+    /// Marks the receiving widget as changed.
+    pub fn mark_changed(&mut self) {
+        self.changed = true;
+    }
+
+    /// Prevents a repeating timer from being rearmed after this delivery.
+    pub fn cancel_rearm(&mut self) {
+        self.rearm = false;
+    }
+
+    pub(crate) const fn changed(&self) -> bool {
+        self.changed
+    }
+
+    pub(crate) const fn should_rearm(&self) -> bool {
+        self.rearm
+    }
 }
 
 impl<'a> KeyboardEventCx<'a> {

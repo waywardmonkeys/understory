@@ -56,5 +56,8 @@ pub use template::{
 };
 pub use text::{TextGlyph, TextGlyphRun, TextSystem};
 pub use ui::Ui;
+pub use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerRepeat};
 pub use visual::{lower_presentation, lower_presentation_with_scale};
-pub use widget::{Button, KeyboardEventCx, Panel, PointerEventCx, Row, TextBlock, Toggle, Widget};
+pub use widget::{
+    Button, KeyboardEventCx, Panel, PointerEventCx, Row, TextBlock, TimerEventCx, Toggle, Widget,
+};

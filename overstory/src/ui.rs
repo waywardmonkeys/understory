@@ -33,6 +33,7 @@ use understory_style::{
     ClassId, MatchState, PartTag, PseudoClassId, ResolveCx, SelectorInputs, SelectorInputsOwned,
     StyleCascade, Theme, ThemeBuilder,
 };
+use understory_timing::{TimerDuration, TimerId, TimerInstant, TimerQueue, TimerRepeat};
 
 use crate::element::{Element, RetainedStyleSubject};
 use crate::style::{StyleInspection, StyleRuleInspection, StyleSourceInspection, StyleSubject};
@@ -41,7 +42,7 @@ use crate::{
     ARRANGE, AppendSpec, Button, ElementId, ElementKind, ElementState, MEASURE, Panel,
     PresentationNode, PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE,
     TemplateSlot, TextBlock, TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
-    widget::{KeyboardEventCx, PointerEventCx, Widget},
+    widget::{KeyboardEventCx, PointerEventCx, TimerEventCx, Widget},
 };
 
 /// Retained semantic UI runtime.
@@ -61,6 +62,7 @@ pub struct Ui {
     pressed: Option<ElementId>,
     focused: Option<ElementId>,
     input: InputState,
+    timers: TimerQueue<ElementId>,
     responder: ResponderState,
     presentation: PresentationTree,
     presentation_viewport: Option<Size>,
@@ -339,6 +341,7 @@ impl Ui {
             pressed: None,
             focused: None,
             input: InputState::default(),
+            timers: TimerQueue::new(),
             responder: ResponderState::new(),
             presentation: PresentationTree::new(),
             presentation_viewport: None,
@@ -545,6 +548,63 @@ impl Ui {
     /// Call this once the host has completed its frame/update pass.
     pub fn clear_input_frame(&mut self) {
         self.input.clear_frame();
+    }
+
+    /// Returns the next pending timer deadline, if any.
+    #[must_use]
+    pub fn next_timer_deadline(&self) -> Option<TimerInstant> {
+        self.timers.next_deadline()
+    }
+
+    /// Schedules a one-shot timer targeted at an element.
+    ///
+    /// Hosts supply the current monotonic `now` and `delay` in matching units.
+    pub fn schedule_timer(
+        &mut self,
+        target: ElementId,
+        now: TimerInstant,
+        delay: TimerDuration,
+    ) -> TimerId {
+        assert!(self.is_alive(target), "timer target element must be live");
+        self.timers.schedule_once(target, now, delay)
+    }
+
+    /// Schedules a timer with an explicit repeat policy.
+    pub fn schedule_timer_with_repeat(
+        &mut self,
+        target: ElementId,
+        now: TimerInstant,
+        delay: TimerDuration,
+        repeat: TimerRepeat,
+    ) -> TimerId {
+        assert!(self.is_alive(target), "timer target element must be live");
+        self.timers.schedule(target, now, delay, repeat)
+    }
+
+    /// Cancels a pending timer.
+    ///
+    /// Returns `true` when a pending timer was removed.
+    pub fn cancel_timer(&mut self, timer: TimerId) -> bool {
+        self.timers.cancel(timer)
+    }
+
+    /// Delivers all timers due at or before `now`.
+    ///
+    /// Returns `true` when any delivered timer changed retained widget state.
+    pub fn timer_event(&mut self, now: TimerInstant) -> bool {
+        let mut changed = false;
+        let mut rearm = Vec::new();
+        while let Some(timer) = self.timers.pop_expired(now) {
+            let target = *timer.target();
+            let should_rearm = self.dispatch_timer_event(target, timer.id(), &mut changed);
+            if should_rearm {
+                rearm.push(timer);
+            }
+        }
+        for timer in rearm {
+            self.timers.rearm(timer);
+        }
+        changed
     }
 
     /// Applies one `ui-events` pointer event to retained UI interaction state.
@@ -1518,6 +1578,28 @@ impl Ui {
         changed
     }
 
+    fn dispatch_timer_event(
+        &mut self,
+        target: ElementId,
+        timer: TimerId,
+        changed: &mut bool,
+    ) -> bool {
+        if !self.is_alive(target) || self.elements[target.index()].widget.is_none() {
+            return false;
+        }
+
+        let mut cx = TimerEventCx::new(target);
+        let mut widget = self.take_widget(target);
+        let _outcome = widget.timer_event(&mut cx, timer);
+        self.put_widget(target, widget);
+        if cx.changed() {
+            self.restyle_or_mark_style(target);
+            self.mark_channels(target, MEASURE.into_set());
+            *changed = true;
+        }
+        cx.should_rearm()
+    }
+
     fn apply_hover_path(&mut self, path: &[ElementId]) -> bool {
         let events = self.hover.update_path(path);
         self.apply_hover_events(events)
@@ -1816,6 +1898,50 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TimerMutatingWidget {
+        fired: usize,
+    }
+
+    impl Widget for TimerMutatingWidget {
+        fn kind(&self) -> ElementKind {
+            ElementKind::new(understory_style::TypeTag(903), "test-timer-mutating")
+        }
+
+        fn measure(&self, _ui: &mut Ui, _element: ElementId, _available: Size) -> Size {
+            Size::new(10.0 + self.fired as f64, 10.0)
+        }
+
+        fn present(
+            &self,
+            _ui: &mut Ui,
+            tree: &mut PresentationTree,
+            parent: PresentationNodeId,
+            element: ElementId,
+            bounds: Rect,
+        ) -> PresentationNodeId {
+            const TIMER_PART: crate::PartKind = crate::PartKind::new("test-timer-mutating");
+            tree.push_child(parent, PresentationNode::new(element, TIMER_PART, bounds))
+        }
+
+        fn timer_event(&mut self, cx: &mut TimerEventCx, _timer: TimerId) -> Outcome {
+            self.fired += 1;
+            cx.mark_changed();
+            if self.fired >= 2 {
+                cx.cancel_rearm();
+            }
+            Outcome::Continue
+        }
+
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+    }
+
     #[test]
     fn custom_widget_kind_measures_and_presents_without_core_enum_case() {
         let mut ui = Ui::new();
@@ -1888,6 +2014,27 @@ mod tests {
 
         let updated_width = ui.presentation(viewport).nodes()[1].bounds.width();
         assert_eq!(updated_width, 30.0);
+    }
+
+    #[test]
+    fn timer_event_routes_to_widget_and_rearms_repeating_timers() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(100.0, 100.0);
+        let id = ui.append(ui.root(), TimerMutatingWidget { fired: 0 });
+        let repeat = TimerRepeat::coalescing(core::num::NonZeroU64::new(10).expect("nonzero"));
+
+        let timer = ui.schedule_timer_with_repeat(id, 100, 5, repeat);
+        assert_eq!(ui.next_timer_deadline(), Some(105));
+        assert_eq!(ui.presentation(viewport).nodes()[1].bounds.width(), 10.0);
+
+        assert!(ui.timer_event(105));
+        assert_eq!(ui.next_timer_deadline(), Some(115));
+        assert_eq!(ui.presentation(viewport).nodes()[1].bounds.width(), 11.0);
+
+        assert!(ui.timer_event(115));
+        assert_eq!(ui.next_timer_deadline(), None);
+        assert_eq!(ui.presentation(viewport).nodes()[1].bounds.width(), 12.0);
+        assert!(!ui.cancel_timer(timer));
     }
 
     #[test]
