@@ -8,7 +8,7 @@
 
 use alloc::boxed::Box;
 
-use kurbo::Rect;
+use kurbo::{Insets, Rect};
 use understory_style::PartTag;
 
 use crate::{ElementId, PresentationNode, PresentationNodeId, PresentationTree};
@@ -184,6 +184,38 @@ pub enum TemplatePrimitive {
     Text,
 }
 
+/// Bounds source used to arrange a template node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplateBounds {
+    /// Use the bounds supplied for this node's semantic slot.
+    Slot,
+    /// Use the parent presentation node's bounds.
+    Parent,
+}
+
+/// Insets applied to a template node after its bounds source is resolved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TemplateInset {
+    /// No additional inset.
+    None,
+    /// A fixed uniform inset in logical UI coordinates.
+    Fixed(f64),
+    /// Insets resolved from a bindable template property.
+    Property(TemplateProperty),
+}
+
+impl From<f64> for TemplateInset {
+    fn from(inset: f64) -> Self {
+        Self::Fixed(inset.max(0.0))
+    }
+}
+
+impl From<TemplateProperty> for TemplateInset {
+    fn from(property: TemplateProperty) -> Self {
+        Self::Property(property)
+    }
+}
+
 /// A binding from the templated control to a template part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TemplateBinding {
@@ -243,10 +275,12 @@ pub struct TemplateNode {
     pub kind: PartKind,
     /// Presentation primitive emitted by this template node.
     pub primitive: TemplatePrimitive,
+    /// Bounds source used to arrange this template node.
+    pub bounds: TemplateBounds,
     /// Semantic slot this node reads bounds and bound values from.
     pub slot: TemplateSlot,
-    /// Amount by which this node's bounds are inset from the semantic control bounds.
-    pub inset: f64,
+    /// Insets applied after resolving this node's bounds source.
+    pub inset: TemplateInset,
     /// Property bindings applied to this template node.
     pub bindings: Box<[TemplateBinding]>,
     /// Child template nodes.
@@ -260,8 +294,9 @@ impl TemplateNode {
         Self {
             kind,
             primitive: TemplatePrimitive::Group,
+            bounds: TemplateBounds::Slot,
             slot: default_slot_for_part(kind),
-            inset: 0.0,
+            inset: TemplateInset::None,
             bindings: Box::from([]),
             children: Box::from([]),
         }
@@ -289,6 +324,13 @@ impl TemplateNode {
     #[must_use]
     pub const fn with_primitive(mut self, primitive: TemplatePrimitive) -> Self {
         self.primitive = primitive;
+        self
+    }
+
+    /// Returns this template node arranged from its parent presentation bounds.
+    #[must_use]
+    pub const fn with_parent_bounds(mut self) -> Self {
+        self.bounds = TemplateBounds::Parent;
         self
     }
 
@@ -342,10 +384,10 @@ impl TemplateNode {
         self
     }
 
-    /// Returns this template node with bounds inset by `inset` logical units.
+    /// Returns this template node with a fixed or property-backed inset.
     #[must_use]
-    pub fn with_inset(mut self, inset: f64) -> Self {
-        self.inset = inset.max(0.0);
+    pub fn with_inset(mut self, inset: impl Into<TemplateInset>) -> Self {
+        self.inset = inset.into();
         self
     }
 }
@@ -394,7 +436,7 @@ pub fn text_block_template() -> ControlTemplate {
                 TemplateNode::text(CONTENT_PRESENTER_PART_KIND)
                     .with_default_bindings()
                     .with_parent_bounds()
-                    .with_property_inset(PADDING_PROPERTY),
+                    .with_inset(PADDING_PROPERTY),
             ),
     )
 }
@@ -409,7 +451,7 @@ pub fn text_input_template() -> ControlTemplate {
                 TemplateNode::text(CONTENT_PRESENTER_PART_KIND)
                     .with_default_bindings()
                     .with_parent_bounds()
-                    .with_property_inset(PADDING_PROPERTY),
+                    .with_inset(PADDING_PROPERTY),
             ),
     )
 }
@@ -505,6 +547,11 @@ pub(crate) trait TemplateValueSource {
 
     /// Applies one template binding to a presentation node.
     fn apply(&mut self, node: &mut PresentationNode, slot: TemplateSlot, binding: TemplateBinding);
+
+    /// Resolves an inset property used by template layout.
+    fn resolve_insets(&self, _property: TemplateProperty) -> Option<Insets> {
+        None
+    }
 }
 
 /// Instantiates a selected control template into a presentation tree.
@@ -517,7 +564,8 @@ pub(crate) fn instantiate_template(
     data: &mut impl TemplateValueSource,
 ) -> PresentationNodeId {
     let root = template.root();
-    instantiate_template_node(tree, parent, source, root, &layout, data)
+    let parent_bounds = layout.bounds_for(root.slot);
+    instantiate_template_node(tree, parent, source, root, parent_bounds, &layout, data)
 }
 
 fn instantiate_template_node(
@@ -525,11 +573,16 @@ fn instantiate_template_node(
     parent: PresentationNodeId,
     source: ElementId,
     template: &TemplateNode,
+    parent_bounds: Rect,
     layout: &TemplateLayout,
     data: &mut dyn TemplateValueSource,
 ) -> PresentationNodeId {
     data.enter_slot(template.slot);
-    let bounds = layout.bounds_for(template.slot).inset(-template.inset);
+    let source_bounds = match template.bounds {
+        TemplateBounds::Slot => layout.bounds_for(template.slot),
+        TemplateBounds::Parent => parent_bounds,
+    };
+    let bounds = apply_template_inset(source_bounds, template.inset, data);
     let mut node = PresentationNode::new(source, template.kind, bounds);
     match template.primitive {
         TemplatePrimitive::Group => {}
@@ -546,10 +599,32 @@ fn instantiate_template_node(
 
     let id = tree.push_child(parent, node);
     for child in template.children.iter() {
-        instantiate_template_node(tree, id, source, child, layout, data);
+        instantiate_template_node(tree, id, source, child, bounds, layout, data);
     }
     data.exit_slot(template.slot);
     id
+}
+
+fn apply_template_inset(
+    bounds: Rect,
+    inset: TemplateInset,
+    data: &dyn TemplateValueSource,
+) -> Rect {
+    match inset {
+        TemplateInset::None => bounds,
+        TemplateInset::Fixed(inset) => bounds.inset(-inset),
+        TemplateInset::Property(property) => data
+            .resolve_insets(property)
+            .map_or(bounds, |insets| inset_by_edges(bounds, insets)),
+    }
+}
+
+fn inset_by_edges(bounds: Rect, insets: Insets) -> Rect {
+    let x0 = (bounds.x0 + insets.x0).min(bounds.x1);
+    let y0 = (bounds.y0 + insets.y0).min(bounds.y1);
+    let x1 = (bounds.x1 - insets.x1).max(x0);
+    let y1 = (bounds.y1 - insets.y1).max(y0);
+    Rect::new(x0, y0, x1, y1)
 }
 
 fn default_slot_for_part(kind: PartKind) -> TemplateSlot {

@@ -284,10 +284,6 @@ impl TemplateValueSource for TemplateValueResolver<'_> {
             {
                 surface.border_width = value;
             }
-        } else if binding.target == crate::PADDING_PROPERTY {
-            if binding.source == crate::PADDING_PROPERTY {
-                let _padding = self.resolve::<Insets>(self.ui.properties.padding);
-            }
         } else if binding.target == crate::CORNER_RADIUS_PROPERTY {
             if let Some(value) = self.resolve_f64(binding.source)
                 && let Some(surface) = node.surface_primitive_mut_if_present()
@@ -298,6 +294,14 @@ impl TemplateValueSource for TemplateValueResolver<'_> {
             && binding.source == crate::CONTENT_PROPERTY
         {
             self.apply_content(node);
+        }
+    }
+
+    fn resolve_insets(&self, property: crate::TemplateProperty) -> Option<Insets> {
+        if property == crate::PADDING_PROPERTY {
+            Some(self.resolve::<Insets>(self.ui.properties.padding))
+        } else {
+            None
         }
     }
 }
@@ -2217,8 +2221,9 @@ mod tests {
         let mut ui = Ui::new();
         let id = ui.add_text_block(ui.root(), "A short label");
         ui.set_local(id, ui.properties().font_size, 22.0);
+        ui.set_local(id, ui.properties().padding, Insets::new(5.0, 7.0, 0.0, 0.0));
 
-        let (text_matches, font_size) = ui
+        let (text_matches, font_size, x0, y0) = ui
             .presentation(Size::new(200.0, 100.0))
             .nodes()
             .iter()
@@ -2228,6 +2233,8 @@ mod tests {
                 (
                     text.content.as_str() == "A short label",
                     text.style.font_size(),
+                    node.bounds.x0,
+                    node.bounds.y0,
                 )
             })
             .expect("text block should emit a content presenter");
@@ -2235,6 +2242,8 @@ mod tests {
         assert_eq!(ui.kind(id), Some(ElementKind::TEXT_BLOCK));
         assert!(text_matches);
         assert_eq!(font_size, 22.0);
+        assert_eq!(x0, 5.0);
+        assert_eq!(y0, 7.0);
     }
 
     #[test]
