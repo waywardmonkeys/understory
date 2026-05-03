@@ -215,11 +215,13 @@ impl RunState {
     }
 
     fn handle_translation(&mut self, translation: WindowEventTranslation) {
-        let WindowEventTranslation::Pointer(event) = translation else {
-            return;
+        let changed = match translation {
+            WindowEventTranslation::Pointer(event) => {
+                self.ui.pointer_event(self.viewport_size(), &event)
+            }
+            WindowEventTranslation::Keyboard(event) => self.ui.keyboard_event(&event),
         };
-
-        if self.ui.pointer_event(self.viewport_size(), &event) {
+        if changed {
             self.window.request_redraw();
         }
     }
