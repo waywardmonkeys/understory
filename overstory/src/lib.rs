@@ -54,4 +54,4 @@ pub use template::{
 pub use text::{TextGlyph, TextGlyphRun, TextSystem};
 pub use ui::Ui;
 pub use visual::{lower_presentation, lower_presentation_with_scale};
-pub use widget::{Button, Panel, Row, TextBlock, Toggle, Widget};
+pub use widget::{Button, Panel, PointerEventCx, Row, TextBlock, Toggle, Widget};

@@ -36,7 +36,8 @@ use crate::template::{TemplateBinding, TemplateValueSource};
 use crate::{
     ARRANGE, Button, ElementId, ElementKind, ElementState, MEASURE, Panel, PresentationNode,
     PresentationNodeId, PresentationTree, ROOT_PART, Row, STYLE, TEMPLATE, TemplateSlot, TextBlock,
-    TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL, widget::Widget,
+    TextContent, TextStyle, TextSystem, Toggle, UiProperties, VISUAL,
+    widget::{PointerEventCx, Widget},
 };
 
 /// Retained semantic UI runtime.
@@ -491,23 +492,23 @@ impl Ui {
         match event {
             PointerEvent::Move(PointerUpdate {
                 pointer, current, ..
-            }) => self.pointer_move(viewport, current.logical_point(), *pointer),
+            }) => self.pointer_move(viewport, current.logical_point(), *pointer, event),
             PointerEvent::Down(PointerButtonEvent {
                 button,
                 pointer,
                 state,
             }) if *button == Some(PointerButton::Primary) => {
-                self.pointer_down(viewport, state.logical_point(), state.time, *pointer)
+                self.pointer_down(viewport, state.logical_point(), state.time, *pointer, event)
             }
             PointerEvent::Up(PointerButtonEvent {
                 button,
                 pointer,
                 state,
             }) if *button == Some(PointerButton::Primary) => {
-                self.pointer_up(viewport, state.logical_point(), state.time, *pointer)
+                self.pointer_up(viewport, state.logical_point(), state.time, *pointer, event)
             }
             PointerEvent::Leave(pointer) | PointerEvent::Cancel(pointer) => {
-                self.pointer_cancel(*pointer)
+                self.pointer_cancel(*pointer, event)
             }
             PointerEvent::Down(_)
             | PointerEvent::Up(_)
@@ -1161,8 +1162,15 @@ impl Ui {
         self.state(element).is_some_and(ElementState::enabled) && self.widget_hit_testable(element)
     }
 
-    fn pointer_move(&mut self, viewport: Size, point: Point, pointer: PointerInfo) -> bool {
+    fn pointer_move(
+        &mut self,
+        viewport: Size,
+        point: Point,
+        pointer: PointerInfo,
+        event: &PointerEvent,
+    ) -> bool {
         let hit = self.hit_target(viewport, point);
+        let route = self.pointer_route_from_hit(hit.as_ref());
         let hover_route = self.hover_route_from_hit(hit.as_ref());
         let mut changed = self.apply_hover_route(&hover_route);
         self.clicks.on_move(pointer_id(pointer), point);
@@ -1170,6 +1178,7 @@ impl Ui {
             self.clicks.cancel(pointer_id(pointer));
             changed |= self.set_pressed_element(None);
         }
+        changed |= self.dispatch_pointer_event(&route.dispatches, event, None);
         changed
     }
 
@@ -1179,8 +1188,10 @@ impl Ui {
         point: Point,
         timestamp: u64,
         pointer: PointerInfo,
+        event: &PointerEvent,
     ) -> bool {
         let hit = self.hit_target(viewport, point);
+        let route = self.pointer_route_from_hit(hit.as_ref());
         let hover_route = self.hover_route_from_hit(hit.as_ref());
         let mut changed = self.apply_hover_route(&hover_route);
         if let Some(target) = hit.as_ref().map(|target| target.element) {
@@ -1197,6 +1208,7 @@ impl Ui {
             self.clicks.cancel(pointer_id(pointer));
             changed |= self.set_pressed_element(None);
         }
+        changed |= self.dispatch_pointer_event(&route.dispatches, event, None);
         changed
     }
 
@@ -1206,6 +1218,7 @@ impl Ui {
         point: Point,
         timestamp: u64,
         pointer: PointerInfo,
+        event: &PointerEvent,
     ) -> bool {
         let hit = self.hit_target(viewport, point);
         let route = self.pointer_route_from_hit(hit.as_ref());
@@ -1224,17 +1237,21 @@ impl Ui {
             ClickResult::Suppressed(self.pressed)
         };
         changed |= self.set_pressed_element(None);
-        if let ClickResult::Click(id) = click {
-            changed |= self.dispatch_activation(&route.dispatches, id);
-        }
+        let clicked = match click {
+            ClickResult::Click(id) => Some(id),
+            ClickResult::Suppressed(_) => None,
+        };
+        changed |= self.dispatch_pointer_event(&route.dispatches, event, clicked);
         self.responder.release_pointer();
         changed
     }
 
-    fn pointer_cancel(&mut self, pointer: PointerInfo) -> bool {
+    fn pointer_cancel(&mut self, pointer: PointerInfo, event: &PointerEvent) -> bool {
+        let route = self.pointer_route_from_hit(None);
         self.clicks.cancel(pointer_id(pointer));
         let mut changed = self.clear_hover();
         changed |= self.set_pressed_element(None);
+        changed |= self.dispatch_pointer_event(&route.dispatches, event, None);
         self.responder.release_pointer();
         changed
     }
@@ -1284,13 +1301,30 @@ impl Ui {
         }
     }
 
-    fn dispatch_activation(&mut self, dispatches: &[ResponderDispatch], target: ElementId) -> bool {
+    fn dispatch_pointer_event(
+        &mut self,
+        dispatches: &[ResponderDispatch],
+        event: &PointerEvent,
+        clicked: Option<ElementId>,
+    ) -> bool {
         let mut changed = false;
         dispatcher::run(dispatches, &mut changed, |dispatch, changed| {
-            if matches!(dispatch.phase, Phase::Target) && dispatch.node == target {
-                *changed |= self.activate(target);
+            if self.elements[dispatch.node.index()].widget.is_none() {
+                return Outcome::Continue;
             }
-            Outcome::Continue
+
+            let mut cx = PointerEventCx::new(
+                dispatch.node,
+                dispatch.phase,
+                clicked == Some(dispatch.node) && matches!(dispatch.phase, Phase::Target),
+            );
+            let mut widget = self.take_widget(dispatch.node);
+            let outcome = widget.pointer_event(&mut cx, event);
+            self.put_widget(dispatch.node, widget);
+            if cx.activate_requested() {
+                *changed |= self.activate(dispatch.node);
+            }
+            outcome
         });
         changed
     }
@@ -1402,6 +1436,8 @@ fn timestamp_ms(timestamp_ns: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
     use ui_events::pointer::{PointerId, PointerInfo, PointerState, PointerType};
 
     #[test]
@@ -1481,6 +1517,60 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ActivatingWidget {
+        activations: Rc<RefCell<usize>>,
+    }
+
+    impl Widget for ActivatingWidget {
+        fn kind(&self) -> ElementKind {
+            ElementKind::new(understory_style::TypeTag(901), "test-activating")
+        }
+
+        fn measure(&self, _ui: &mut Ui, _element: ElementId, _available: Size) -> Size {
+            Size::new(24.0, 24.0)
+        }
+
+        fn present(
+            &self,
+            _ui: &mut Ui,
+            tree: &mut PresentationTree,
+            parent: PresentationNodeId,
+            element: ElementId,
+            bounds: Rect,
+        ) -> PresentationNodeId {
+            const ACTIVATING_PART: crate::PartKind = crate::PartKind::new("test-activating");
+            tree.push_child(
+                parent,
+                PresentationNode::new(element, ACTIVATING_PART, bounds),
+            )
+        }
+
+        fn hit_testable(&self) -> bool {
+            true
+        }
+
+        fn activate(&mut self) -> bool {
+            *self.activations.borrow_mut() += 1;
+            true
+        }
+
+        fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+            if cx.is_target() && cx.clicked() {
+                cx.activate();
+            }
+            Outcome::Continue
+        }
+
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+    }
+
     #[test]
     fn custom_widget_kind_measures_and_presents_without_core_enum_case() {
         let mut ui = Ui::new();
@@ -1509,6 +1599,32 @@ mod tests {
             ui.hit_test(Size::new(100.0, 100.0), Point::new(1.0, 1.0)),
             None
         );
+    }
+
+    #[test]
+    fn widget_pointer_event_can_request_activation() {
+        let mut ui = Ui::new();
+        let viewport = Size::new(100.0, 100.0);
+        let activations = Rc::new(RefCell::new(0));
+        let id = ui.append(
+            ui.root(),
+            ActivatingWidget {
+                activations: activations.clone(),
+            },
+        );
+        let bounds = ui
+            .presentation(viewport)
+            .nodes()
+            .iter()
+            .find(|node| node.source == id)
+            .map(|node| node.bounds)
+            .expect("activating widget should be presented");
+        let point = bounds.center();
+
+        assert!(ui.pointer_event(viewport, &pointer_down(point)));
+        assert!(ui.pointer_event(viewport, &pointer_up(point)));
+
+        assert_eq!(*activations.borrow(), 1);
     }
 
     #[test]

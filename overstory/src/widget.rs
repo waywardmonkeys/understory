@@ -7,6 +7,8 @@ use alloc::{string::String, vec::Vec};
 use core::any::Any;
 
 use kurbo::{Insets, Rect, Size};
+use ui_events::pointer::PointerEvent;
+use understory_responder::types::{Outcome, Phase};
 use understory_style::PseudoClassId;
 
 use crate::{
@@ -42,6 +44,15 @@ pub trait Widget: Any + core::fmt::Debug {
         false
     }
 
+    /// Handles a routed pointer event.
+    ///
+    /// The event is the raw `ui-events` pointer event supplied to [`Ui`](crate::Ui).
+    /// `cx` carries Overstory routing context such as responder phase and whether
+    /// this target received a recognized click.
+    fn pointer_event(&mut self, _cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+        Outcome::Continue
+    }
+
     /// Activates the widget's primary action.
     ///
     /// Returns `true` when activation changed retained widget state.
@@ -57,6 +68,59 @@ pub trait Widget: Any + core::fmt::Debug {
 
     /// Returns this widget as mutable `Any` for typed updates.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Per-widget context for a routed pointer event.
+#[derive(Clone, Debug)]
+pub struct PointerEventCx {
+    element: ElementId,
+    phase: Phase,
+    clicked: bool,
+    activate_requested: bool,
+}
+
+impl PointerEventCx {
+    pub(crate) const fn new(element: ElementId, phase: Phase, clicked: bool) -> Self {
+        Self {
+            element,
+            phase,
+            clicked,
+            activate_requested: false,
+        }
+    }
+
+    /// Returns the element currently receiving the event.
+    #[must_use]
+    pub const fn element(&self) -> ElementId {
+        self.element
+    }
+
+    /// Returns the responder phase for this delivery.
+    #[must_use]
+    pub const fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    /// Returns whether this delivery is the target phase.
+    #[must_use]
+    pub const fn is_target(&self) -> bool {
+        matches!(self.phase, Phase::Target)
+    }
+
+    /// Returns whether this target received a recognized click.
+    #[must_use]
+    pub const fn clicked(&self) -> bool {
+        self.clicked
+    }
+
+    /// Requests primary activation after the widget handler returns.
+    pub fn activate(&mut self) {
+        self.activate_requested = true;
+    }
+
+    pub(crate) const fn activate_requested(&self) -> bool {
+        self.activate_requested
+    }
 }
 
 /// Interactive text-bearing push button.
@@ -142,6 +206,13 @@ impl Widget for Button {
 
     fn hit_testable(&self) -> bool {
         true
+    }
+
+    fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+        if cx.is_target() && cx.clicked() {
+            cx.activate();
+        }
+        Outcome::Continue
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -549,6 +620,13 @@ impl Widget for Toggle {
     fn activate(&mut self) -> bool {
         self.checked = !self.checked;
         true
+    }
+
+    fn pointer_event(&mut self, cx: &mut PointerEventCx, _event: &PointerEvent) -> Outcome {
+        if cx.is_target() && cx.clicked() {
+            cx.activate();
+        }
+        Outcome::Continue
     }
 
     fn append_selector_pseudos(&self, pseudos: &mut Vec<PseudoClassId>) {
