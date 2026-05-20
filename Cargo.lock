@@ -535,6 +535,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "understory_binding"
+version = "0.1.0"
+dependencies = [
+ "hashbrown",
+ "invalidation",
+ "understory_property",
+]
+
+[[package]]
 name = "understory_box_tree"
 version = "0.0.1"
 dependencies = [
